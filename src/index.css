@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+* { box-sizing: border-box; }
+
+body {
+  background-color: #080d1a;
+  color: #e2e8f0;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  margin: 0;
+  min-height: 100vh;
+}
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+}
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: #080d1a; }
+::-webkit-scrollbar-thumb { background: #1e2d4a; border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #00c8f0; }
+
+.apexcharts-tooltip {
+  background: #0f1629 !important;
+  border: 1px solid #1e2d4a !important;
+  color: #e2e8f0 !important;
+}
+.apexcharts-tooltip-title {
+  background: #111827 !important;
+  border-bottom: 1px solid #1e2d4a !important;
+  color: #94a3b8 !important;
+}
