@@ -42,13 +42,13 @@ interface TopIP {
 }
 
 function buildTypeStats(alerts: NtopAlert[]): TypeStat[] {
-  const map = new Map<number, TypeStat>();
+  const map = new Map<string, TypeStat>();
   for (const a of alerts) {
-    const id = a.alert_id;
-    if (!map.has(id)) {
-      map.set(id, { alert_id: id, label: DDOS_LABELS[id] ?? `#${id}`, count: 0, critical: 0, warning: 0 });
+    const label = a.name || DDOS_LABELS[a.alert_id] || `Alerta #${a.alert_id}`;
+    if (!map.has(label)) {
+      map.set(label, { alert_id: a.alert_id, label, count: 0, critical: 0, warning: 0 });
     }
-    const s = map.get(id)!;
+    const s = map.get(label)!;
     s.count++;
     if (a.severity === 'critical' || a.severity === 'error') s.critical++;
     else if (a.severity === 'warning') s.warning++;
@@ -77,7 +77,7 @@ function exportCSV(alerts: NtopAlert[], filename: string) {
   const header = 'Horário,Tipo,Severidade,IP Alvo,IP Origem,Score,Duração\n';
   const rows = alerts.map(a => [
     a.tstamp ? new Date(a.tstamp * 1000).toLocaleString('pt-BR') : '',
-    DDOS_LABELS[a.alert_id] ?? a.alert_id,
+    a.name || DDOS_LABELS[a.alert_id] || a.alert_id,
     a.severity ?? '',
     a.ip ?? '',
     a.cli_ip ?? '',
@@ -260,7 +260,7 @@ export function ReportsPage() {
                 <Table<TypeStat>
                   columns={typeColumns}
                   dataSource={typeStats}
-                  rowKey="alert_id"
+                  rowKey="label"
                   pagination={false}
                   size="small"
                   locale={{ emptyText: 'Sem dados' }}
