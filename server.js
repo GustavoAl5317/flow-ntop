@@ -29,6 +29,8 @@ const NTOPNG_TARGET   = process.env.VITE_NTOPNG_BASE_URL || 'https://flow-ntop.a
 const NTOPNG_TOKEN    = process.env.VITE_NTOPNG_TOKEN || '';
 const CF_AUTHORIZATION = process.env.CF_AUTHORIZATION || '';
 const NTOPNG_SESSION  = process.env.NTOPNG_SESSION || '';
+const CF_ACCESS_CLIENT_ID     = process.env.CF_ACCESS_CLIENT_ID || '';
+const CF_ACCESS_CLIENT_SECRET = process.env.CF_ACCESS_CLIENT_SECRET || '';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -82,7 +84,10 @@ const server = http.createServer((req, res) => {
       headers['Authorization'] = `Token ${NTOPNG_TOKEN}`;
       headers['X-Auth-Token'] = NTOPNG_TOKEN;
     }
-    if (CF_AUTHORIZATION) {
+    if (CF_ACCESS_CLIENT_ID && CF_ACCESS_CLIENT_SECRET) {
+      headers['CF-Access-Client-Id'] = CF_ACCESS_CLIENT_ID;
+      headers['CF-Access-Client-Secret'] = CF_ACCESS_CLIENT_SECRET;
+    } else if (CF_AUTHORIZATION) {
       headers['Cookie'] = `CF_Authorization=${CF_AUTHORIZATION}`;
       headers['CF-Access-Jwt-Assertion'] = CF_AUTHORIZATION;
     }
