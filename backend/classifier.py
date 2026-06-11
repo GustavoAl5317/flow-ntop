@@ -45,13 +45,21 @@ def severity_from_score(score: int) -> str:
         return "critical"
     if score >= 40:
         return "warning"
-    if score >= 15:
+    if score >= 20:
         return "notice"
     return "info"
 
 
 def classify_event(ev: dict) -> tuple[str, int]:
-    """Per-flow heuristic classification. Returns (severity, score)."""
+    """Per-flow heuristic classification. Returns (severity, score).
+
+    Note: a single ~1400-1500 byte packet per flow is the *normal* signature
+    of sampled HTTPS/TCP traffic (MTU-sized segments) and must NOT be scored
+    on its own — otherwise virtually all web traffic gets flagged. The
+    "single oversized packet" heuristic is only meaningful for UDP traffic on
+    known amplification/reflection ports, where it indicates a reflected
+    response (small request -> large single-packet reply).
+    """
     score = 5
     protocol = str(ev.get("protocol") or ev.get("proto") or "").upper()
     dst_port = ev.get("dst_port")
@@ -59,18 +67,18 @@ def classify_event(ev: dict) -> tuple[str, int]:
     num_bytes = ev.get("bytes") or 0
     packets = ev.get("packets") or 0
 
-    if dst_port in AMPLIFICATION_PORTS or src_port in AMPLIFICATION_PORTS:
+    is_amplification_flow = dst_port in AMPLIFICATION_PORTS or src_port in AMPLIFICATION_PORTS
+
+    if is_amplification_flow:
         score += 30
+
+        if protocol == "UDP" and packets == 1 and num_bytes > 1000:
+            # Single large UDP packet from an amplification-prone port:
+            # classic reflection/amplification reply signature.
+            score += 25
 
     if protocol == "ICMP":
         score += 10
-
-    if packets > 0:
-        avg_pkt_size = num_bytes / packets
-        if avg_pkt_size > 1200:
-            score += 10
-        if packets == 1 and num_bytes > 1000:
-            score += 15
 
     score = max(0, min(100, score))
     return severity_from_score(score), score
