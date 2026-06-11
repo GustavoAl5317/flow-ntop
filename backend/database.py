@@ -355,6 +355,224 @@ def delete_threshold(threshold_id: int) -> bool:
     return cur.rowcount > 0
 
 
+# ─── NetFlow aggregation queries (GoFlow2 pipeline) ───────────────────────────
+
+def _epoch_clause(clauses: list[str], params: list, epoch_begin: int | None, epoch_end: int | None) -> None:
+    if epoch_begin is not None:
+        clauses.append("tstamp >= ?")
+        params.append(epoch_begin)
+    if epoch_end is not None:
+        clauses.append("tstamp <= ?")
+        params.append(epoch_end)
+
+
+def netflow_top_talkers(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    direction: str = "src",
+    limit: int = 20,
+) -> list[dict]:
+    """Top IPs by traffic volume. direction='src' (origin) or 'dst' (destination)."""
+    ip_col = "dst_ip" if direction == "dst" else "src_ip"
+
+    clauses = ["source = 'goflow2'", f"{ip_col} IS NOT NULL"]
+    params: list = []
+    _epoch_clause(clauses, params, epoch_begin, epoch_end)
+    where = " AND ".join(clauses)
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT {ip_col} AS ip,
+                       SUM(bytes) AS total_bytes,
+                       SUM(packets) AS total_packets,
+                       COUNT(*) AS flows,
+                       MAX(src_as) AS src_as,
+                       MAX(dst_as) AS dst_as
+                FROM events
+                WHERE {where}
+                GROUP BY {ip_col}
+                ORDER BY total_bytes DESC
+                LIMIT ?""",
+            [*params, limit],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def netflow_top_ports(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    port_type: str = "dst",
+    limit: int = 20,
+) -> list[dict]:
+    """Top ports by traffic volume. port_type='dst' or 'src'."""
+    port_col = "src_port" if port_type == "src" else "dst_port"
+
+    clauses = ["source = 'goflow2'", f"{port_col} IS NOT NULL"]
+    params: list = []
+    _epoch_clause(clauses, params, epoch_begin, epoch_end)
+    where = " AND ".join(clauses)
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT {port_col} AS port,
+                       protocol,
+                       SUM(bytes) AS total_bytes,
+                       SUM(packets) AS total_packets,
+                       COUNT(*) AS flows
+                FROM events
+                WHERE {where}
+                GROUP BY {port_col}, protocol
+                ORDER BY total_bytes DESC
+                LIMIT ?""",
+            [*params, limit],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def netflow_top_asn(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    asn_type: str = "src",
+    limit: int = 20,
+) -> list[dict]:
+    """Top ASNs by traffic volume. asn_type='src' or 'dst'."""
+    asn_col = "src_as" if asn_type == "src" else "dst_as"
+
+    clauses = ["source = 'goflow2'", f"{asn_col} IS NOT NULL", f"{asn_col} != 0"]
+    params: list = []
+    _epoch_clause(clauses, params, epoch_begin, epoch_end)
+    where = " AND ".join(clauses)
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT {asn_col} AS asn,
+                       SUM(bytes) AS total_bytes,
+                       SUM(packets) AS total_packets,
+                       COUNT(*) AS flows
+                FROM events
+                WHERE {where}
+                GROUP BY {asn_col}
+                ORDER BY total_bytes DESC
+                LIMIT ?""",
+            [*params, limit],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def netflow_protocols(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+) -> list[dict]:
+    """Traffic breakdown by protocol."""
+    clauses = ["source = 'goflow2'", "protocol IS NOT NULL"]
+    params: list = []
+    _epoch_clause(clauses, params, epoch_begin, epoch_end)
+    where = " AND ".join(clauses)
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT protocol,
+                       SUM(bytes) AS total_bytes,
+                       SUM(packets) AS total_packets,
+                       COUNT(*) AS flows
+                FROM events
+                WHERE {where}
+                GROUP BY protocol
+                ORDER BY total_bytes DESC""",
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def netflow_bandwidth_by_client(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Top clients (by src_ip) ranked by total bandwidth."""
+    clauses = ["source = 'goflow2'", "src_ip IS NOT NULL"]
+    params: list = []
+    _epoch_clause(clauses, params, epoch_begin, epoch_end)
+    where = " AND ".join(clauses)
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT src_ip AS ip,
+                       SUM(bytes) AS total_bytes,
+                       SUM(packets) AS total_packets,
+                       COUNT(*) AS flows,
+                       SUM(CASE WHEN severity IN ('critical','error') THEN 1 ELSE 0 END) AS critical,
+                       SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) AS warning
+                FROM events
+                WHERE {where}
+                GROUP BY src_ip
+                ORDER BY total_bytes DESC
+                LIMIT ?""",
+            [*params, limit],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def netflow_timeseries(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    bucket_seconds: int = 60,
+    ip: str | None = None,
+) -> list[dict]:
+    """Bandwidth/packets over time, bucketed. Optionally filter by ip (src or dst)."""
+    clauses = ["source = 'goflow2'"]
+    params: list = []
+    _epoch_clause(clauses, params, epoch_begin, epoch_end)
+    if ip:
+        clauses.append("(src_ip = ? OR dst_ip = ?)")
+        params.extend([ip, ip])
+    where = " AND ".join(clauses)
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT (tstamp / ?) * ? AS bucket,
+                       SUM(bytes) AS total_bytes,
+                       SUM(packets) AS total_packets,
+                       COUNT(*) AS flows,
+                       SUM(CASE WHEN severity IN ('critical','error') THEN 1 ELSE 0 END) AS critical,
+                       SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) AS warning
+                FROM events
+                WHERE {where}
+                GROUP BY bucket
+                ORDER BY bucket ASC""",
+            [bucket_seconds, bucket_seconds, *params],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def netflow_incidents(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    severity: str | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    """Recent NetFlow-sourced flows flagged with elevated severity (incidents)."""
+    clauses = ["source = 'goflow2'", "severity IS NOT NULL", "severity != 'info'"]
+    params: list = []
+    _epoch_clause(clauses, params, epoch_begin, epoch_end)
+    if severity:
+        clauses.append("severity = ?")
+        params.append(severity)
+    where = " AND ".join(clauses)
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT id, tstamp, severity, score, proto, ip, cli_ip,
+                       src_port, dst_port, bytes, packets, duration
+                FROM events
+                WHERE {where}
+                ORDER BY tstamp DESC
+                LIMIT ?""",
+            [*params, limit],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_alert_statuses(keys: list[str]) -> list[dict]:
     if not keys:
         return []
