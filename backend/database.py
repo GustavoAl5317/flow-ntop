@@ -156,10 +156,17 @@ def normalize_netflow_event(ev: dict) -> dict:
 
 
 def insert_events(events: list[dict], source: str = "ntopng") -> int:
+    """Insert a batch of events.
+
+    `source` is the bulk-request-level default (e.g. from EventBulkRequest.source).
+    Individual events may carry their own `source` field (e.g. the GoFlow2
+    collector embeds "source": "goflow2" in each event but does not set the
+    top-level request field) — that per-event value takes precedence.
+    """
     now = datetime.now(timezone.utc).isoformat()
     netflow_cols = list(NETFLOW_COLUMNS.keys())
     inserted = 0
-    max_tstamp = 0
+    max_tstamp_by_source: dict[str, int] = {}
     with get_db() as conn:
         for raw_ev in events:
             tstamp = raw_ev.get("tstamp")
@@ -167,7 +174,10 @@ def insert_events(events: list[dict], source: str = "ntopng") -> int:
                 continue
             ev = normalize_netflow_event(raw_ev)
             alert_id = ev.get("alert_id") or 0
-            max_tstamp = max(max_tstamp, int(tstamp))
+            event_source = raw_ev.get("source") or source
+            max_tstamp_by_source[event_source] = max(
+                max_tstamp_by_source.get(event_source, 0), int(tstamp)
+            )
 
             columns = ["tstamp", "alert_id", "severity", "score", "duration", "ip", "cli_ip", "proto",
                        "alert_status", "source", "raw_json", "created_at", *netflow_cols]
@@ -181,7 +191,7 @@ def insert_events(events: list[dict], source: str = "ntopng") -> int:
                 ev.get("cli_ip"),
                 ev.get("proto"),
                 ev.get("alert_status"),
-                source,
+                event_source,
                 json.dumps(raw_ev, ensure_ascii=False),
                 now,
                 *(ev.get(col) for col in netflow_cols),
@@ -193,8 +203,9 @@ def insert_events(events: list[dict], source: str = "ntopng") -> int:
             )
             inserted += 1
 
-        if source == "goflow2" and max_tstamp:
-            detect_volumetric_attacks(conn, max_tstamp)
+        goflow2_max_tstamp = max_tstamp_by_source.get("goflow2")
+        if goflow2_max_tstamp:
+            detect_volumetric_attacks(conn, goflow2_max_tstamp)
 
     return inserted
 
