@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from classifier import classify_event, detect_volumetric_attacks
+
 DB_PATH = Path(os.getenv("FLOW_DB_PATH", Path(__file__).parent / "flow.db"))
 
 
@@ -141,6 +143,15 @@ def normalize_netflow_event(ev: dict) -> dict:
             except (TypeError, ValueError):
                 pass
 
+    # Classify NetFlow-sourced flows that don't already carry a severity/score
+    # (e.g. ntopng-sourced events keep their own classification).
+    if out.get("severity") is None or out.get("score") is None:
+        severity, score = classify_event(out)
+        if out.get("severity") is None:
+            out["severity"] = severity
+        if out.get("score") is None:
+            out["score"] = score
+
     return out
 
 
@@ -148,6 +159,7 @@ def insert_events(events: list[dict], source: str = "ntopng") -> int:
     now = datetime.now(timezone.utc).isoformat()
     netflow_cols = list(NETFLOW_COLUMNS.keys())
     inserted = 0
+    max_tstamp = 0
     with get_db() as conn:
         for raw_ev in events:
             tstamp = raw_ev.get("tstamp")
@@ -155,6 +167,7 @@ def insert_events(events: list[dict], source: str = "ntopng") -> int:
                 continue
             ev = normalize_netflow_event(raw_ev)
             alert_id = ev.get("alert_id") or 0
+            max_tstamp = max(max_tstamp, int(tstamp))
 
             columns = ["tstamp", "alert_id", "severity", "score", "duration", "ip", "cli_ip", "proto",
                        "alert_status", "source", "raw_json", "created_at", *netflow_cols]
@@ -179,6 +192,10 @@ def insert_events(events: list[dict], source: str = "ntopng") -> int:
                 values,
             )
             inserted += 1
+
+        if source == "goflow2" and max_tstamp:
+            detect_volumetric_attacks(conn, max_tstamp)
+
     return inserted
 
 
