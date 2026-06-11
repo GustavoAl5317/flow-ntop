@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Card, Table, Tag, Select, Button, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import Chart from 'react-apexcharts';
+import type { ApexOptions } from 'apexcharts';
 import dayjs from 'dayjs';
 import { Network, RefreshCw } from 'lucide-react';
 import {
@@ -10,12 +12,14 @@ import {
   getNetflowProtocols,
   getNetflowBandwidthByClient,
   getNetflowIncidents,
+  getNetflowTimeseries,
   type NetflowTopTalker,
   type NetflowTopPort,
   type NetflowTopAsn,
   type NetflowProtocol,
   type NetflowBandwidthClient,
   type NetflowIncident,
+  type NetflowTimeseriesPoint,
 } from '../services/backendApi';
 
 function formatBytes(bytes: number | null | undefined): string {
@@ -45,6 +49,14 @@ const RANGE_OPTIONS = [
   { label: 'Últimos 7 dias', value: 7 * 24 * 3600 },
 ];
 
+// Bucket size scales with the selected range so the chart stays readable.
+function bucketSecondsFor(rangeSeconds: number): number {
+  if (rangeSeconds <= 3600) return 60;          // 1h  -> 1min buckets
+  if (rangeSeconds <= 6 * 3600) return 300;     // 6h  -> 5min buckets
+  if (rangeSeconds <= 24 * 3600) return 1800;   // 24h -> 30min buckets
+  return 3600 * 6;                              // 7d  -> 6h buckets
+}
+
 export function NetflowPage() {
   const [rangeSeconds, setRangeSeconds] = useState(24 * 3600);
   const [loading, setLoading] = useState(false);
@@ -58,6 +70,7 @@ export function NetflowPage() {
   const [protocols, setProtocols] = useState<NetflowProtocol[]>([]);
   const [bandwidth, setBandwidth] = useState<NetflowBandwidthClient[]>([]);
   const [incidents, setIncidents] = useState<NetflowIncident[]>([]);
+  const [timeseries, setTimeseries] = useState<NetflowTimeseriesPoint[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -75,9 +88,10 @@ export function NetflowPage() {
       getNetflowProtocols({ epoch_begin, epoch_end }),
       getNetflowBandwidthByClient(params),
       getNetflowIncidents({ epoch_begin, epoch_end, limit: 50 }),
+      getNetflowTimeseries({ epoch_begin, epoch_end, bucket_seconds: bucketSecondsFor(rangeSeconds) }),
     ]);
 
-    const [r1, r2, r3, r4, r5, r6, r7, r8] = results;
+    const [r1, r2, r3, r4, r5, r6, r7, r8, r9] = results;
     if (r1.status === 'fulfilled') setTopTalkersSrc(r1.value.records); else setTopTalkersSrc([]);
     if (r2.status === 'fulfilled') setTopTalkersDst(r2.value.records); else setTopTalkersDst([]);
     if (r3.status === 'fulfilled') setTopPorts(r3.value.records); else setTopPorts([]);
@@ -86,6 +100,7 @@ export function NetflowPage() {
     if (r6.status === 'fulfilled') setProtocols(r6.value.records); else setProtocols([]);
     if (r7.status === 'fulfilled') setBandwidth(r7.value.records); else setBandwidth([]);
     if (r8.status === 'fulfilled') setIncidents(r8.value.records); else setIncidents([]);
+    if (r9.status === 'fulfilled') setTimeseries(r9.value.records); else setTimeseries([]);
 
     if (results.every(r => r.status === 'rejected')) {
       setError('Não foi possível carregar dados de NetFlow. Verifique a conexão com o backend.');
@@ -102,7 +117,7 @@ export function NetflowPage() {
 
   const hasData = topTalkersSrc.length > 0 || topTalkersDst.length > 0 || topPorts.length > 0
     || topAsnSrc.length > 0 || topAsnDst.length > 0 || protocols.length > 0
-    || bandwidth.length > 0 || incidents.length > 0;
+    || bandwidth.length > 0 || incidents.length > 0 || timeseries.length > 0;
 
   return (
     <main style={{
@@ -155,6 +170,8 @@ export function NetflowPage() {
           </div>
         )}
       </div>
+
+      <NetflowTimeseriesChart data={timeseries} loading={loading} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
         <Card title={<span style={{ color: '#94a3b8' }}>Top Origens (Clientes)</span>}
@@ -277,3 +294,95 @@ const incidentColumns: ColumnsType<NetflowIncident> = [
   { title: 'Bytes', dataIndex: 'bytes', render: v => formatBytes(v) },
   { title: 'Pacotes', dataIndex: 'packets' },
 ];
+
+interface TimeseriesChartProps {
+  data: NetflowTimeseriesPoint[];
+  loading: boolean;
+}
+
+function NetflowTimeseriesChart({ data, loading }: TimeseriesChartProps) {
+  const hasPoints = data.length > 0;
+
+  if (!hasPoints) {
+    return (
+      <Card title={<span style={{ color: '#94a3b8' }}>Histórico e Evolução de Tráfego/Incidentes</span>}
+        style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} bodyStyle={{ padding: 12 }}>
+        <p className="text-xs text-center py-12" style={{ color: '#475569' }}>
+          {loading ? 'Carregando série temporal…' : 'Sem dados de NetFlow para o período selecionado.'}
+        </p>
+      </Card>
+    );
+  }
+
+  const labels = data.map(p => dayjs.unix(p.bucket).format('DD/MM HH:mm'));
+  const bandwidthSeries = data.map(p => Number(((p.total_bytes ?? 0) * 8 / 1_000_000).toFixed(2))); // Mbps-equivalent volume per bucket
+  const packetsSeries = data.map(p => p.total_packets ?? 0);
+  const criticalSeries = data.map(p => p.critical ?? 0);
+  const warningSeries = data.map(p => p.warning ?? 0);
+
+  const options: ApexOptions = {
+    chart: {
+      id: 'netflow-timeseries',
+      background: 'transparent',
+      toolbar: { show: false },
+      animations: { enabled: false },
+      zoom: { enabled: false },
+      stacked: false,
+    },
+    colors: ['#00c8f0', '#8b5cf6', '#f59e0b', '#ff3b3b'],
+    fill: {
+      type: ['gradient', 'solid', 'solid', 'solid'],
+      gradient: { shadeIntensity: 1, opacityFrom: 0.3, opacityTo: 0.02, stops: [0, 95, 100] },
+    },
+    stroke: { curve: 'smooth', width: [2, 0, 0, 0] },
+    plotOptions: { bar: { columnWidth: '60%' } },
+    grid: {
+      borderColor: '#1e2d4a',
+      strokeDashArray: 4,
+      xaxis: { lines: { show: false } },
+    },
+    xaxis: {
+      categories: labels,
+      labels: { style: { colors: '#475569', fontSize: '10px', fontFamily: 'monospace' }, rotate: 0 },
+      axisBorder: { show: false },
+      axisTicks: { show: false },
+      tickAmount: Math.min(10, labels.length),
+    },
+    yaxis: [
+      {
+        seriesName: 'Volume (Mb)',
+        labels: { style: { colors: '#475569', fontSize: '11px', fontFamily: 'monospace' }, formatter: v => `${v.toFixed(0)} Mb` },
+      },
+      {
+        seriesName: 'Pacotes',
+        opposite: true,
+        labels: { style: { colors: '#475569', fontSize: '11px', fontFamily: 'monospace' }, formatter: v => v.toFixed(0) },
+      },
+      { seriesName: 'Críticos', show: false },
+      { seriesName: 'Avisos', show: false },
+    ],
+    tooltip: { theme: 'dark', x: { show: true } },
+    legend: { labels: { colors: '#94a3b8' }, fontSize: '12px' },
+    dataLabels: { enabled: false },
+  };
+
+  const chartSeries = [
+    { name: 'Volume (Mb)', type: 'area', data: bandwidthSeries },
+    { name: 'Pacotes',     type: 'column', data: packetsSeries },
+    { name: 'Avisos',      type: 'column', data: warningSeries },
+    { name: 'Críticos',    type: 'column', data: criticalSeries },
+  ];
+
+  return (
+    <Card title={<span style={{ color: '#94a3b8' }}>Histórico e Evolução de Tráfego/Incidentes</span>}
+      style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} bodyStyle={{ padding: 12 }}>
+      <Chart
+        key="netflow-timeseries"
+        options={options}
+        series={chartSeries}
+        type="line"
+        height={280}
+      />
+    </Card>
+  );
+}
