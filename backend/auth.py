@@ -10,6 +10,12 @@ SECRET_KEY = os.getenv("JWT_SECRET", "flow-guard-dev-secret-change-in-production
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "24"))
 
+# Static, non-expiring API key for trusted internal services (e.g. the
+# GoFlow2 collector). Set FLOW_COLLECTOR_API_KEY in the backend's .env and
+# configure the collector to send `Authorization: Bearer <that value>`.
+# Avoids the collector's bulk-insert calls failing once a JWT expires.
+COLLECTOR_API_KEY = os.getenv("FLOW_COLLECTOR_API_KEY", "")
+
 ADMIN_USER = os.getenv("FLOW_ADMIN_USER", "admin")
 ADMIN_PASSWORD = os.getenv("FLOW_ADMIN_PASSWORD", "flowguard")
 
@@ -51,6 +57,11 @@ def get_current_user(
             detail="Token ausente ou inválido",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # Static service token (non-expiring) for trusted internal collectors.
+    if COLLECTOR_API_KEY and credentials.credentials == COLLECTOR_API_KEY:
+        return {"username": "collector", "role": "service"}
+
     try:
         payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
         username: str | None = payload.get("sub")
