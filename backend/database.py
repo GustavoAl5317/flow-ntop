@@ -24,13 +24,46 @@ def get_db():
         conn.close()
 
 
+# Extra columns added for the NetFlow (GoFlow2) pipeline.
+# Mapping from NetFlow payload -> events table:
+#   cli_ip = src_ip, ip = dst_ip, proto = protocol,
+#   duration = (flow_end_ns - flow_start_ns) / 1e9
+NETFLOW_COLUMNS: dict[str, str] = {
+    "src_ip":        "TEXT",
+    "dst_ip":        "TEXT",
+    "src_port":      "INTEGER",
+    "dst_port":      "INTEGER",
+    "protocol":      "TEXT",
+    "bytes":         "INTEGER",
+    "packets":       "INTEGER",
+    "src_as":        "INTEGER",
+    "dst_as":        "INTEGER",
+    "src_net":       "TEXT",
+    "dst_net":       "TEXT",
+    "in_if":         "INTEGER",
+    "out_if":        "INTEGER",
+    "next_hop":      "TEXT",
+    "flow_start_ns": "INTEGER",
+    "flow_end_ns":   "INTEGER",
+    "sampler":       "TEXT",
+}
+
+
+def _migrate_events_table(conn: sqlite3.Connection) -> None:
+    """Add new NetFlow columns to an existing events table, if missing."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(events)")}
+    for col, col_type in NETFLOW_COLUMNS.items():
+        if col not in existing:
+            conn.execute(f"ALTER TABLE events ADD COLUMN {col} {col_type}")
+
+
 def init_db() -> None:
     with get_db() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS events (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 tstamp      INTEGER NOT NULL,
-                alert_id    INTEGER NOT NULL,
+                alert_id    INTEGER NOT NULL DEFAULT 0,
                 severity    TEXT,
                 score       INTEGER,
                 duration    INTEGER,
@@ -80,36 +113,70 @@ def init_db() -> None:
                 UNIQUE(ifid, metric)
             );
         """)
+        _migrate_events_table(conn)
+
+
+def normalize_netflow_event(ev: dict) -> dict:
+    """Map a raw NetFlow (GoFlow2 collector) event onto the events schema.
+
+    Existing fields (ip, cli_ip, proto, duration, severity, score) are kept
+    if already present (e.g. ntopng-sourced events); otherwise they are
+    derived from the NetFlow fields.
+    """
+    out = dict(ev)
+
+    if out.get("cli_ip") is None:
+        out["cli_ip"] = ev.get("src_ip")
+    if out.get("ip") is None:
+        out["ip"] = ev.get("dst_ip")
+    if out.get("proto") is None:
+        out["proto"] = ev.get("protocol")
+
+    if out.get("duration") is None:
+        start_ns = ev.get("flow_start_ns")
+        end_ns = ev.get("flow_end_ns")
+        if start_ns is not None and end_ns is not None:
+            try:
+                out["duration"] = max(0, int((int(end_ns) - int(start_ns)) / 1_000_000_000))
+            except (TypeError, ValueError):
+                pass
+
+    return out
 
 
 def insert_events(events: list[dict], source: str = "ntopng") -> int:
     now = datetime.now(timezone.utc).isoformat()
+    netflow_cols = list(NETFLOW_COLUMNS.keys())
     inserted = 0
     with get_db() as conn:
-        for ev in events:
-            tstamp = ev.get("tstamp")
-            alert_id = ev.get("alert_id")
-            if tstamp is None or alert_id is None:
+        for raw_ev in events:
+            tstamp = raw_ev.get("tstamp")
+            if tstamp is None:
                 continue
+            ev = normalize_netflow_event(raw_ev)
+            alert_id = ev.get("alert_id") or 0
+
+            columns = ["tstamp", "alert_id", "severity", "score", "duration", "ip", "cli_ip", "proto",
+                       "alert_status", "source", "raw_json", "created_at", *netflow_cols]
+            values = [
+                int(tstamp),
+                int(alert_id),
+                ev.get("severity"),
+                ev.get("score"),
+                ev.get("duration"),
+                ev.get("ip"),
+                ev.get("cli_ip"),
+                ev.get("proto"),
+                ev.get("alert_status"),
+                source,
+                json.dumps(raw_ev, ensure_ascii=False),
+                now,
+                *(ev.get(col) for col in netflow_cols),
+            ]
+            placeholders = ",".join("?" for _ in columns)
             conn.execute(
-                """INSERT INTO events
-                   (tstamp, alert_id, severity, score, duration, ip, cli_ip, proto,
-                    alert_status, source, raw_json, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    int(tstamp),
-                    int(alert_id),
-                    ev.get("severity"),
-                    ev.get("score"),
-                    ev.get("duration"),
-                    ev.get("ip"),
-                    ev.get("cli_ip"),
-                    ev.get("proto"),
-                    ev.get("alert_status"),
-                    source,
-                    json.dumps(ev, ensure_ascii=False),
-                    now,
-                ),
+                f"INSERT INTO events ({','.join(columns)}) VALUES ({placeholders})",
+                values,
             )
             inserted += 1
     return inserted
