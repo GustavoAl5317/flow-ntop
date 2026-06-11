@@ -11,6 +11,7 @@ import { AdvancedQueryPage } from './pages/AdvancedQueryPage';
 import { HistoryPage }   from './pages/HistoryPage';
 import { ReportsPage }   from './pages/ReportsPage';
 import { DetectionPage } from './pages/DetectionPage';
+import { NetflowPage }   from './pages/NetflowPage';
 import { LoginPage }     from './pages/LoginPage';
 import { useDashboardData } from './hooks/useDashboardData';
 import { useThresholdDetection } from './hooks/useThresholdDetection';
@@ -43,6 +44,7 @@ function AppLayout() {
           <Route path="/consulta"  element={<AdvancedQueryPage />} />
           <Route path="/relatorios" element={<ReportsPage />} />
           <Route path="/deteccao"  element={<DetectionPage />} />
+          <Route path="/netflow"   element={<NetflowPage />} />
         </Routes>
       </div>
 

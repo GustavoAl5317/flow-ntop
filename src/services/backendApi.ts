@@ -164,6 +164,129 @@ export async function saveAlertStatus(data: {
   return apiFetch('/alert-status', { method: 'POST', body: JSON.stringify(data) });
 }
 
+// ─── NetFlow (GoFlow2 pipeline) ────────────────────────────────────────────
+
+export interface NetflowTopTalker {
+  ip: string;
+  total_bytes: number;
+  total_packets: number;
+  flows: number;
+  src_as: number | null;
+  dst_as: number | null;
+}
+
+export interface NetflowTopPort {
+  port: number;
+  protocol: string;
+  total_bytes: number;
+  total_packets: number;
+  flows: number;
+}
+
+export interface NetflowTopAsn {
+  asn: number;
+  total_bytes: number;
+  total_packets: number;
+  flows: number;
+}
+
+export interface NetflowProtocol {
+  protocol: string;
+  total_bytes: number;
+  total_packets: number;
+  flows: number;
+}
+
+export interface NetflowBandwidthClient {
+  ip: string;
+  total_bytes: number;
+  total_packets: number;
+  flows: number;
+  critical: number;
+  warning: number;
+}
+
+export interface NetflowTimeseriesPoint {
+  bucket: number;
+  total_bytes: number;
+  total_packets: number;
+  flows: number;
+  critical: number;
+  warning: number;
+}
+
+export interface NetflowIncident {
+  id: number;
+  tstamp: number;
+  severity: string;
+  score: number;
+  proto: string | null;
+  ip: string | null;
+  cli_ip: string | null;
+  src_port: number | null;
+  dst_port: number | null;
+  bytes: number | null;
+  packets: number | null;
+  duration: number | null;
+}
+
+interface NetflowParams {
+  epoch_begin?: number;
+  epoch_end?: number;
+  limit?: number;
+}
+
+function buildQS(params: object): string {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params as Record<string, unknown>)) {
+    if (v !== undefined && v !== null) qs.set(k, String(v));
+  }
+  const s = qs.toString();
+  return s ? `?${s}` : '';
+}
+
+export async function getNetflowTopTalkers(
+  params: NetflowParams & { direction?: 'src' | 'dst' } = {},
+): Promise<{ records: NetflowTopTalker[] }> {
+  return apiFetch(`/netflow/top-talkers${buildQS(params)}`);
+}
+
+export async function getNetflowTopPorts(
+  params: NetflowParams & { port_type?: 'src' | 'dst' } = {},
+): Promise<{ records: NetflowTopPort[] }> {
+  return apiFetch(`/netflow/top-ports${buildQS(params)}`);
+}
+
+export async function getNetflowTopAsn(
+  params: NetflowParams & { asn_type?: 'src' | 'dst' } = {},
+): Promise<{ records: NetflowTopAsn[] }> {
+  return apiFetch(`/netflow/top-asn${buildQS(params)}`);
+}
+
+export async function getNetflowProtocols(
+  params: NetflowParams = {},
+): Promise<{ records: NetflowProtocol[] }> {
+  return apiFetch(`/netflow/protocols${buildQS(params)}`);
+}
+
+export async function getNetflowBandwidthByClient(
+  params: NetflowParams = {},
+): Promise<{ records: NetflowBandwidthClient[] }> {
+  return apiFetch(`/netflow/bandwidth-by-client${buildQS(params)}`);
+}
+
+export async function getNetflowTimeseries(
+  params: NetflowParams & { bucket_seconds?: number; ip?: string } = {},
+): Promise<{ records: NetflowTimeseriesPoint[] }> {
+  return apiFetch(`/netflow/timeseries${buildQS(params)}`);
+}
+
+export async function getNetflowIncidents(
+  params: NetflowParams & { severity?: string } = {},
+): Promise<{ records: NetflowIncident[] }> {
+  return apiFetch(`/netflow/incidents${buildQS(params)}`);
+}
+
 export async function checkBackendHealth(): Promise<boolean> {
   try {
     const res = await fetch('/api/health');
