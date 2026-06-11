@@ -38,12 +38,13 @@ function AppLayout() {
         <Sidebar onSettings={() => setShowConfig(true)} />
 
         <Routes>
-          <Route path="/"          element={<DashboardPage />} />
+          <Route path="/"          element={<NetflowPage />} />
           <Route path="/alertas"   element={<AlertsPage />} />
           <Route path="/historico" element={<HistoryPage />} />
           <Route path="/consulta"  element={<AdvancedQueryPage />} />
           <Route path="/relatorios" element={<ReportsPage />} />
           <Route path="/deteccao"  element={<DetectionPage />} />
+          <Route path="/dashboard-ntopng" element={<DashboardPage />} />
           <Route path="/netflow"   element={<NetflowPage />} />
         </Routes>
       </div>

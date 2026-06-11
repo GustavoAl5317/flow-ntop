@@ -8,7 +8,7 @@ const navItems = [
   { icon: Search,          label: 'Consulta',   to: '/consulta'  },
   { icon: BarChart2,       label: 'Relatórios', to: '/relatorios'},
   { icon: Gauge,           label: 'Detecção',   to: '/deteccao'  },
-  { icon: Network,         label: 'NetFlow',    to: '/netflow'   },
+  { icon: Network,         label: 'Dashboard ntopng', to: '/dashboard-ntopng' },
 ];
 
 interface Props {
