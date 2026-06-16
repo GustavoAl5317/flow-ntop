@@ -1,7 +1,11 @@
 import csv
 import io
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent / ".env")  # load backend/.env before any os.getenv() calls
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
