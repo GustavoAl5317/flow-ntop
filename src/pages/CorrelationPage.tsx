@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Card, Table, Tag, Select, Button, Typography, Space, Badge, Tooltip, InputNumber } from 'antd';
-import type { ColumnsType, ExpandableConfig } from 'antd/es/table';
+import type { ColumnsType } from 'antd/es/table';
 import { RefreshCw, AlertTriangle, Shield, Zap } from 'lucide-react';
 import dayjs from 'dayjs';
 import {
@@ -231,8 +231,8 @@ export function CorrelationPage() {
     },
   ];
 
-  const expandable: ExpandableConfig<CorrelatedAttack> = {
-    expandedRowRender: (record) => <AttackDetail attack={record} />,
+  const expandable = {
+    expandedRowRender: (record: CorrelatedAttack) => <AttackDetail attack={record} />,
     rowExpandable: () => true,
   };
 
