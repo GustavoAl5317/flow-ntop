@@ -13,8 +13,9 @@ import { ReportsPage }   from './pages/ReportsPage';
 import { DetectionPage } from './pages/DetectionPage';
 import { NetflowPage }    from './pages/NetflowPage';
 import { IPBlocksPage }    from './pages/IPBlocksPage';
-import { InterfacesPage }  from './pages/InterfacesPage';
-import { LoginPage }       from './pages/LoginPage';
+import { InterfacesPage }   from './pages/InterfacesPage';
+import { CorrelationPage }  from './pages/CorrelationPage';
+import { LoginPage }        from './pages/LoginPage';
 import { useDashboardData } from './hooks/useDashboardData';
 import { useThresholdDetection } from './hooks/useThresholdDetection';
 
@@ -50,6 +51,7 @@ function AppLayout() {
           <Route path="/netflow"    element={<NetflowPage />} />
           <Route path="/ip-blocks"   element={<IPBlocksPage />} />
           <Route path="/interfaces"  element={<InterfacesPage />} />
+          <Route path="/correlacao"  element={<CorrelationPage />} />
         </Routes>
       </div>
 

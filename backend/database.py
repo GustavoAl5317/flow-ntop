@@ -884,6 +884,101 @@ def discovered_interfaces(epoch_begin: int | None = None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+# ─── Attack Correlation ───────────────────────────────────────────────────────
+
+def correlated_attacks(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    min_events: int = 3,
+    limit: int = 30,
+) -> list[dict]:
+    """Group high-severity events by victim IP into attack campaigns.
+
+    Does one DB query and aggregates in Python to avoid N+1 per victim.
+    """
+    clauses = [
+        "severity IS NOT NULL",
+        "severity NOT IN ('info', 'notice')",
+        "ip IS NOT NULL",
+    ]
+    params: list = []
+    if epoch_begin is not None:
+        clauses.append("tstamp >= ?")
+        params.append(epoch_begin)
+    if epoch_end is not None:
+        clauses.append("tstamp <= ?")
+        params.append(epoch_end)
+    where = " AND ".join(clauses)
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT ip, cli_ip, proto, bytes, packets, tstamp, severity, src_as
+                FROM events WHERE {where}""",
+            params,
+        ).fetchall()
+
+    from collections import defaultdict
+
+    groups: dict = defaultdict(lambda: {
+        "event_count": 0, "total_bytes": 0, "total_packets": 0,
+        "first_seen": None, "last_seen": None,
+        "severities": set(),
+        "src_bytes":  defaultdict(int),
+        "asn_bytes":  defaultdict(int),
+        "proto_bytes": defaultdict(int),
+    })
+
+    for row in rows:
+        victim = row["ip"]
+        g = groups[victim]
+        g["event_count"] += 1
+        g["total_bytes"]   += row["bytes"]   or 0
+        g["total_packets"] += row["packets"] or 0
+        t = row["tstamp"]
+        if g["first_seen"] is None or t < g["first_seen"]: g["first_seen"] = t
+        if g["last_seen"]  is None or t > g["last_seen"]:  g["last_seen"]  = t
+        if row["severity"]:  g["severities"].add(row["severity"])
+        if row["cli_ip"]:    g["src_bytes"][row["cli_ip"]]  += row["bytes"] or 0
+        if row["src_as"]:    g["asn_bytes"][row["src_as"]]  += row["bytes"] or 0
+        if row["proto"]:     g["proto_bytes"][row["proto"]] += row["bytes"] or 0
+
+    results = []
+    for victim_ip, g in sorted(groups.items(), key=lambda x: -x[1]["total_bytes"]):
+        if g["event_count"] < min_events:
+            continue
+        sev_set = g["severities"]
+        max_sev = "critical" if sev_set & {"critical", "error"} else "warning"
+        duration = (g["last_seen"] - g["first_seen"]) if g["first_seen"] and g["last_seen"] else 0
+        results.append({
+            "victim_ip":     victim_ip,
+            "event_count":   g["event_count"],
+            "total_bytes":   g["total_bytes"],
+            "total_packets": g["total_packets"],
+            "first_seen":    g["first_seen"],
+            "last_seen":     g["last_seen"],
+            "duration_s":    duration,
+            "max_severity":  max_sev,
+            "unique_sources": len(g["src_bytes"]),
+            "protocols": [
+                {"proto": k, "bytes": v}
+                for k, v in sorted(g["proto_bytes"].items(), key=lambda x: -x[1])[:5]
+            ],
+            "top_sources": [
+                {"ip": k, "bytes": v}
+                for k, v in sorted(g["src_bytes"].items(), key=lambda x: -x[1])[:5]
+            ],
+            "top_asns": [
+                {"asn": k, "bytes": v}
+                for k, v in sorted(g["asn_bytes"].items(), key=lambda x: -x[1])[:5]
+                if k
+            ],
+        })
+        if len(results) >= limit:
+            break
+
+    return results
+
+
 def get_alert_statuses(keys: list[str]) -> list[dict]:
     if not keys:
         return []

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from auth import authenticate_user, create_access_token, get_current_user
 from database import (
     build_summary,
+    correlated_attacks,
     delete_interface,
     delete_ip_block,
     delete_threshold,
@@ -468,6 +469,19 @@ def save_alert_status(
         updated_by=user["username"],
     )
     return {"deleted": True}
+
+
+# ─── Correlation ──────────────────────────────────────────────────────────────
+
+@app.get("/api/correlation/attacks")
+def get_correlated_attacks(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    min_events: int = Query(default=3, ge=1, le=100),
+    limit: int = Query(default=30, le=100),
+    user: dict = Depends(get_current_user),
+) -> dict:
+    return {"attacks": correlated_attacks(epoch_begin, epoch_end, min_events, limit)}
 
 
 # ─── IP Blocks ────────────────────────────────────────────────────────────────

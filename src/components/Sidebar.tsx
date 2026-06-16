@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Zap, Bell, BarChart2, Search, Settings, Gauge, Network, Shield, Router } from 'lucide-react';
+import { LayoutDashboard, Zap, Bell, BarChart2, Search, Settings, Gauge, Network, Shield, Router, GitMerge } from 'lucide-react';
 
 const navItems = [
   { icon: LayoutDashboard, label: 'Dashboard',          to: '/'                },
@@ -10,6 +10,7 @@ const navItems = [
   { icon: Gauge,           label: 'Detecção',           to: '/deteccao'        },
   { icon: Shield,          label: 'Blocos IP',          to: '/ip-blocks'       },
   { icon: Router,          label: 'Interfaces',         to: '/interfaces'      },
+  { icon: GitMerge,        label: 'Correlação',         to: '/correlacao'      },
   { icon: Network,         label: 'Dashboard ntopng',   to: '/dashboard-ntopng'},
 ];
 

@@ -307,6 +307,47 @@ export async function getNetflowIncidents(
   return apiFetch(`/netflow/incidents${buildQS(params)}`);
 }
 
+// ─── Correlation ──────────────────────────────────────────────────────────────
+
+export interface AttackProtocol {
+  proto: string;
+  bytes: number;
+}
+
+export interface AttackSource {
+  ip: string;
+  bytes: number;
+}
+
+export interface AttackAsn {
+  asn: number;
+  bytes: number;
+}
+
+export interface CorrelatedAttack {
+  victim_ip: string;
+  event_count: number;
+  total_bytes: number;
+  total_packets: number;
+  first_seen: number;
+  last_seen: number;
+  duration_s: number;
+  max_severity: 'critical' | 'warning';
+  unique_sources: number;
+  protocols: AttackProtocol[];
+  top_sources: AttackSource[];
+  top_asns: AttackAsn[];
+}
+
+export async function getCorrelatedAttacks(params: {
+  epoch_begin?: number;
+  epoch_end?: number;
+  min_events?: number;
+  limit?: number;
+} = {}): Promise<{ attacks: CorrelatedAttack[] }> {
+  return apiFetch(`/correlation/attacks${buildQS(params)}`);
+}
+
 // ─── IP Blocks ────────────────────────────────────────────────────────────────
 
 export interface IpBlock {
