@@ -14,10 +14,13 @@ from pydantic import BaseModel
 from auth import authenticate_user, create_access_token, get_current_user
 from database import (
     build_summary,
+    delete_ip_block,
     delete_threshold,
     get_alert_statuses,
     init_db,
     insert_events,
+    ip_blocks_stats,
+    list_ip_blocks,
     list_reports,
     list_thresholds,
     netflow_bandwidth_by_client,
@@ -31,6 +34,7 @@ from database import (
     query_events,
     save_report,
     upsert_alert_status,
+    upsert_ip_block,
     upsert_threshold,
 )
 
@@ -95,6 +99,12 @@ class AlertStatusRequest(BaseModel):
     status: str
     assigned_to: str | None = None
     note: str | None = None
+
+
+class IpBlockRequest(BaseModel):
+    cidr: str
+    label: str
+    customer: str | None = None
 
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -445,6 +455,37 @@ def save_alert_status(
         updated_by=user["username"],
     )
     return {"deleted": True}
+
+
+# ─── IP Blocks ────────────────────────────────────────────────────────────────
+
+@app.get("/api/ip-blocks")
+def get_ip_blocks(user: dict = Depends(get_current_user)) -> dict:
+    return {"blocks": list_ip_blocks()}
+
+
+@app.post("/api/ip-blocks")
+def create_ip_block(body: IpBlockRequest, user: dict = Depends(get_current_user)) -> dict:
+    try:
+        return upsert_ip_block(body.cidr, body.label, body.customer)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.delete("/api/ip-blocks/{block_id}")
+def remove_ip_block(block_id: int, user: dict = Depends(get_current_user)) -> dict:
+    if not delete_ip_block(block_id):
+        raise HTTPException(status_code=404, detail="Bloco não encontrado")
+    return {"deleted": True}
+
+
+@app.get("/api/ip-blocks/stats")
+def get_ip_blocks_stats(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    return {"stats": ip_blocks_stats(epoch_begin, epoch_end)}
 
 
 @app.get("/api/health")

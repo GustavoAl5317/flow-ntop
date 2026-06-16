@@ -11,7 +11,8 @@ import { AdvancedQueryPage } from './pages/AdvancedQueryPage';
 import { HistoryPage }   from './pages/HistoryPage';
 import { ReportsPage }   from './pages/ReportsPage';
 import { DetectionPage } from './pages/DetectionPage';
-import { NetflowPage }   from './pages/NetflowPage';
+import { NetflowPage }    from './pages/NetflowPage';
+import { IPBlocksPage }  from './pages/IPBlocksPage';
 import { LoginPage }     from './pages/LoginPage';
 import { useDashboardData } from './hooks/useDashboardData';
 import { useThresholdDetection } from './hooks/useThresholdDetection';
@@ -45,7 +46,8 @@ function AppLayout() {
           <Route path="/relatorios" element={<ReportsPage />} />
           <Route path="/deteccao"  element={<DetectionPage />} />
           <Route path="/dashboard-ntopng" element={<DashboardPage />} />
-          <Route path="/netflow"   element={<NetflowPage />} />
+          <Route path="/netflow"    element={<NetflowPage />} />
+          <Route path="/ip-blocks"  element={<IPBlocksPage />} />
         </Routes>
       </div>
 

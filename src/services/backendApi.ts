@@ -307,6 +307,48 @@ export async function getNetflowIncidents(
   return apiFetch(`/netflow/incidents${buildQS(params)}`);
 }
 
+// ─── IP Blocks ────────────────────────────────────────────────────────────────
+
+export interface IpBlock {
+  id: number;
+  cidr: string;
+  label: string;
+  customer: string | null;
+  network_int: number;
+  broadcast_int: number;
+  created_at: string;
+}
+
+export interface IpBlockStats {
+  id: number;
+  total_bytes: number;
+  total_packets: number;
+  total_flows: number;
+}
+
+export async function getIpBlocks(): Promise<{ blocks: IpBlock[] }> {
+  return apiFetch('/ip-blocks');
+}
+
+export async function createIpBlock(data: {
+  cidr: string;
+  label: string;
+  customer?: string | null;
+}): Promise<IpBlock> {
+  return apiFetch('/ip-blocks', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export async function deleteIpBlock(id: number): Promise<{ deleted: boolean }> {
+  return apiFetch(`/ip-blocks/${id}`, { method: 'DELETE' });
+}
+
+export async function getIpBlocksStats(params: {
+  epoch_begin?: number;
+  epoch_end?: number;
+} = {}): Promise<{ stats: IpBlockStats[] }> {
+  return apiFetch(`/ip-blocks/stats${buildQS(params)}`);
+}
+
 export async function checkBackendHealth(): Promise<boolean> {
   try {
     const res = await fetch('/api/health');

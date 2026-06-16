@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import os
 import sqlite3
@@ -10,9 +11,19 @@ from classifier import classify_event, detect_volumetric_attacks
 DB_PATH = Path(os.getenv("FLOW_DB_PATH", Path(__file__).parent / "flow.db"))
 
 
+def _ip_to_int(ip_str: str | None) -> int | None:
+    if not ip_str:
+        return None
+    try:
+        return int(ipaddress.IPv4Address(ip_str))
+    except Exception:
+        return None
+
+
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.create_function("ip_to_int", 1, _ip_to_int)
     return conn
 
 
@@ -114,6 +125,17 @@ def init_db() -> None:
                 updated_at    TEXT NOT NULL,
                 UNIQUE(ifid, metric)
             );
+
+            CREATE TABLE IF NOT EXISTS ip_blocks (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                cidr          TEXT NOT NULL UNIQUE,
+                label         TEXT NOT NULL,
+                customer      TEXT,
+                network_int   INTEGER NOT NULL,
+                broadcast_int INTEGER NOT NULL,
+                created_at    TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ip_blocks_nets ON ip_blocks(network_int, broadcast_int);
         """)
         _migrate_events_table(conn)
 
@@ -685,6 +707,75 @@ def netflow_incidents(
                 ORDER BY tstamp DESC
                 LIMIT ?""",
             [*params, limit],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ─── IP Blocks (prefixos monitorados) ────────────────────────────────────────
+
+def list_ip_blocks() -> list[dict]:
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM ip_blocks ORDER BY label").fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_ip_block(cidr: str, label: str, customer: str | None) -> dict:
+    net = ipaddress.IPv4Network(cidr, strict=False)
+    network_int = int(net.network_address)
+    broadcast_int = int(net.broadcast_address)
+    now = datetime.now(timezone.utc).isoformat()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO ip_blocks (cidr, label, customer, network_int, broadcast_int, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(cidr) DO UPDATE SET
+                   label=excluded.label,
+                   customer=excluded.customer""",
+            (cidr, label, customer, network_int, broadcast_int, now),
+        )
+        row = conn.execute("SELECT * FROM ip_blocks WHERE cidr = ?", (cidr,)).fetchone()
+    return dict(row)
+
+
+def delete_ip_block(block_id: int) -> bool:
+    with get_db() as conn:
+        cur = conn.execute("DELETE FROM ip_blocks WHERE id = ?", (block_id,))
+    return cur.rowcount > 0
+
+
+def ip_blocks_stats(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+) -> list[dict]:
+    where_parts = ["source = 'goflow2'"]
+    params: list = []
+    if epoch_begin is not None:
+        where_parts.append("tstamp >= ?")
+        params.append(epoch_begin)
+    if epoch_end is not None:
+        where_parts.append("tstamp <= ?")
+        params.append(epoch_end)
+    where = " AND ".join(where_parts)
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""WITH filtered AS (
+                    SELECT bytes, packets,
+                           ip_to_int(src_ip) AS src_int,
+                           ip_to_int(dst_ip) AS dst_int,
+                           1 AS cnt
+                    FROM events WHERE {where}
+                )
+                SELECT b.id,
+                       COALESCE(SUM(f.bytes), 0)   AS total_bytes,
+                       COALESCE(SUM(f.packets), 0) AS total_packets,
+                       COALESCE(SUM(f.cnt), 0)     AS total_flows
+                FROM ip_blocks b
+                LEFT JOIN filtered f
+                    ON (f.src_int IS NOT NULL AND f.src_int BETWEEN b.network_int AND b.broadcast_int)
+                    OR (f.dst_int IS NOT NULL AND f.dst_int BETWEEN b.network_int AND b.broadcast_int)
+                GROUP BY b.id""",
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
 
