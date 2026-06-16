@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Card, Table, Button, Input, Form, Select, Typography, Space, Popconfirm, message, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { PlusOutlined, DeleteOutlined, RefreshCw } from 'lucide-react';
+import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
+import { RefreshCw } from 'lucide-react';
 import {
   getIpBlocks,
   createIpBlock,
