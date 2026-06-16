@@ -136,6 +136,18 @@ def init_db() -> None:
                 created_at    TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_ip_blocks_nets ON ip_blocks(network_int, broadcast_int);
+
+            CREATE TABLE IF NOT EXISTS interfaces (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                ifid          INTEGER NOT NULL,
+                router_ip     TEXT NOT NULL DEFAULT '',
+                name          TEXT NOT NULL,
+                description   TEXT,
+                capacity_mbps REAL,
+                created_at    TEXT NOT NULL,
+                UNIQUE(ifid, router_ip)
+            );
+            CREATE INDEX IF NOT EXISTS idx_interfaces_ifid ON interfaces(ifid);
         """)
         _migrate_events_table(conn)
 
@@ -776,6 +788,98 @@ def ip_blocks_stats(
                     OR (f.dst_int IS NOT NULL AND f.dst_int BETWEEN b.network_int AND b.broadcast_int)
                 GROUP BY b.id""",
             params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ─── Interfaces ───────────────────────────────────────────────────────────────
+
+def list_interfaces() -> list[dict]:
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM interfaces ORDER BY name").fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_interface(ifid: int, router_ip: str, name: str, description: str | None, capacity_mbps: float | None) -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO interfaces (ifid, router_ip, name, description, capacity_mbps, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(ifid, router_ip) DO UPDATE SET
+                   name=excluded.name,
+                   description=excluded.description,
+                   capacity_mbps=excluded.capacity_mbps""",
+            (ifid, router_ip, name, description, capacity_mbps, now),
+        )
+        row = conn.execute(
+            "SELECT * FROM interfaces WHERE ifid = ? AND router_ip = ?", (ifid, router_ip)
+        ).fetchone()
+    return dict(row)
+
+
+def delete_interface(iface_id: int) -> bool:
+    with get_db() as conn:
+        cur = conn.execute("DELETE FROM interfaces WHERE id = ?", (iface_id,))
+    return cur.rowcount > 0
+
+
+def interfaces_stats(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+) -> list[dict]:
+    where_parts = ["source = 'goflow2'"]
+    params: list = []
+    if epoch_begin is not None:
+        where_parts.append("tstamp >= ?")
+        params.append(epoch_begin)
+    if epoch_end is not None:
+        where_parts.append("tstamp <= ?")
+        params.append(epoch_end)
+    where = " AND ".join(where_parts)
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""WITH filtered AS (
+                    SELECT in_if, out_if, bytes, packets
+                    FROM events WHERE {where}
+                )
+                SELECT i.id,
+                       COALESCE(SUM(CASE WHEN f.in_if  = i.ifid THEN f.bytes   ELSE 0 END), 0) AS bytes_in,
+                       COALESCE(SUM(CASE WHEN f.out_if = i.ifid THEN f.bytes   ELSE 0 END), 0) AS bytes_out,
+                       COALESCE(SUM(CASE WHEN f.in_if  = i.ifid THEN f.packets ELSE 0 END), 0) AS packets_in,
+                       COALESCE(SUM(CASE WHEN f.out_if = i.ifid THEN f.packets ELSE 0 END), 0) AS packets_out,
+                       COALESCE(SUM(CASE WHEN f.in_if  = i.ifid THEN 1         ELSE 0 END), 0) AS flows_in,
+                       COALESCE(SUM(CASE WHEN f.out_if = i.ifid THEN 1         ELSE 0 END), 0) AS flows_out
+                FROM interfaces i
+                LEFT JOIN filtered f ON f.in_if = i.ifid OR f.out_if = i.ifid
+                GROUP BY i.id""",
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def discovered_interfaces(epoch_begin: int | None = None) -> list[dict]:
+    """Return unique (in_if, out_if, sampler) combinations seen in recent flows."""
+    clauses = ["source = 'goflow2'", "(in_if IS NOT NULL OR out_if IS NOT NULL)"]
+    params: list = []
+    if epoch_begin is not None:
+        clauses.append("tstamp >= ?")
+        params.append(epoch_begin)
+    where = " AND ".join(clauses)
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT ifid, sampler, COUNT(*) AS flows, SUM(bytes) AS total_bytes
+                FROM (
+                    SELECT in_if AS ifid, sampler, bytes FROM events WHERE {where} AND in_if IS NOT NULL
+                    UNION ALL
+                    SELECT out_if AS ifid, sampler, bytes FROM events WHERE {where} AND out_if IS NOT NULL
+                )
+                GROUP BY ifid, sampler
+                ORDER BY total_bytes DESC
+                LIMIT 50""",
+            [*params, *params],
         ).fetchall()
     return [dict(r) for r in rows]
 

@@ -349,6 +349,66 @@ export async function getIpBlocksStats(params: {
   return apiFetch(`/ip-blocks/stats${buildQS(params)}`);
 }
 
+// ─── Interfaces ───────────────────────────────────────────────────────────────
+
+export interface NetInterface {
+  id: number;
+  ifid: number;
+  router_ip: string;
+  name: string;
+  description: string | null;
+  capacity_mbps: number | null;
+  created_at: string;
+}
+
+export interface InterfaceStats {
+  id: number;
+  bytes_in: number;
+  bytes_out: number;
+  packets_in: number;
+  packets_out: number;
+  flows_in: number;
+  flows_out: number;
+}
+
+export interface DiscoveredInterface {
+  ifid: number;
+  sampler: string | null;
+  flows: number;
+  total_bytes: number;
+}
+
+export async function getInterfaces(): Promise<{ interfaces: NetInterface[] }> {
+  return apiFetch('/interfaces');
+}
+
+export async function createInterface(data: {
+  ifid: number;
+  router_ip?: string;
+  name: string;
+  description?: string | null;
+  capacity_mbps?: number | null;
+}): Promise<NetInterface> {
+  return apiFetch('/interfaces', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export async function deleteInterface(id: number): Promise<{ deleted: boolean }> {
+  return apiFetch(`/interfaces/${id}`, { method: 'DELETE' });
+}
+
+export async function getInterfacesStats(params: {
+  epoch_begin?: number;
+  epoch_end?: number;
+} = {}): Promise<{ stats: InterfaceStats[] }> {
+  return apiFetch(`/interfaces/stats${buildQS(params)}`);
+}
+
+export async function getDiscoveredInterfaces(params: {
+  epoch_begin?: number;
+} = {}): Promise<{ interfaces: DiscoveredInterface[] }> {
+  return apiFetch(`/interfaces/discovered${buildQS(params)}`);
+}
+
 export async function checkBackendHealth(): Promise<boolean> {
   try {
     const res = await fetch('/api/health');

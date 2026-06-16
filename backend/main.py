@@ -14,12 +14,16 @@ from pydantic import BaseModel
 from auth import authenticate_user, create_access_token, get_current_user
 from database import (
     build_summary,
+    delete_interface,
     delete_ip_block,
     delete_threshold,
+    discovered_interfaces,
     get_alert_statuses,
     init_db,
     insert_events,
+    interfaces_stats,
     ip_blocks_stats,
+    list_interfaces,
     list_ip_blocks,
     list_reports,
     list_thresholds,
@@ -34,6 +38,7 @@ from database import (
     query_events,
     save_report,
     upsert_alert_status,
+    upsert_interface,
     upsert_ip_block,
     upsert_threshold,
 )
@@ -105,6 +110,14 @@ class IpBlockRequest(BaseModel):
     cidr: str
     label: str
     customer: str | None = None
+
+
+class InterfaceRequest(BaseModel):
+    ifid: int
+    router_ip: str = ""
+    name: str
+    description: str | None = None
+    capacity_mbps: float | None = None
 
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -486,6 +499,42 @@ def get_ip_blocks_stats(
     user: dict = Depends(get_current_user),
 ) -> dict:
     return {"stats": ip_blocks_stats(epoch_begin, epoch_end)}
+
+
+# ─── Interfaces ───────────────────────────────────────────────────────────────
+
+@app.get("/api/interfaces")
+def get_interfaces(user: dict = Depends(get_current_user)) -> dict:
+    return {"interfaces": list_interfaces()}
+
+
+@app.post("/api/interfaces")
+def create_interface(body: InterfaceRequest, user: dict = Depends(get_current_user)) -> dict:
+    return upsert_interface(body.ifid, body.router_ip, body.name, body.description, body.capacity_mbps)
+
+
+@app.delete("/api/interfaces/{iface_id}")
+def remove_interface(iface_id: int, user: dict = Depends(get_current_user)) -> dict:
+    if not delete_interface(iface_id):
+        raise HTTPException(status_code=404, detail="Interface não encontrada")
+    return {"deleted": True}
+
+
+@app.get("/api/interfaces/stats")
+def get_interfaces_stats(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    return {"stats": interfaces_stats(epoch_begin, epoch_end)}
+
+
+@app.get("/api/interfaces/discovered")
+def get_discovered_interfaces(
+    epoch_begin: int | None = None,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    return {"interfaces": discovered_interfaces(epoch_begin)}
 
 
 @app.get("/api/health")
