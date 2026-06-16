@@ -19,6 +19,7 @@ from database import (
     netflow_bandwidth_by_client,
     netflow_incidents,
     netflow_protocols,
+    netflow_summary,
     netflow_timeseries,
     netflow_top_asn,
     netflow_top_ports,
@@ -151,15 +152,51 @@ def get_events(
 
 # ─── NetFlow aggregations (GoFlow2 pipeline) ──────────────────────────────────
 
+def _nf_query_filters(
+    protocol: str | None,
+    ip_version: str | None,
+    asn: int | None,
+    src_ip: str | None,
+    dst_ip: str | None,
+) -> dict:
+    return dict(protocol=protocol, ip_version=ip_version, asn=asn, src_ip=src_ip, dst_ip=dst_ip)
+
+
+@app.get("/api/netflow/summary")
+def get_netflow_summary(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    bucket_seconds: int = Query(default=60, ge=10, le=3600),
+    protocol: str | None = None,
+    ip_version: str | None = Query(default=None, pattern="^(4|6)$"),
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    return netflow_summary(
+        epoch_begin, epoch_end, bucket_seconds,
+        **_nf_query_filters(protocol, ip_version, asn, src_ip, dst_ip),
+    )
+
+
 @app.get("/api/netflow/top-talkers")
 def get_netflow_top_talkers(
     epoch_begin: int | None = None,
     epoch_end: int | None = None,
     direction: str = Query(default="src", pattern="^(src|dst)$"),
     limit: int = Query(default=20, le=100),
+    protocol: str | None = None,
+    ip_version: str | None = Query(default=None, pattern="^(4|6)$"),
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
     user: dict = Depends(get_current_user),
 ) -> dict:
-    return {"records": netflow_top_talkers(epoch_begin, epoch_end, direction, limit)}
+    return {"records": netflow_top_talkers(
+        epoch_begin, epoch_end, direction, limit,
+        **_nf_query_filters(protocol, ip_version, asn, src_ip, dst_ip),
+    )}
 
 
 @app.get("/api/netflow/top-ports")
@@ -168,9 +205,17 @@ def get_netflow_top_ports(
     epoch_end: int | None = None,
     port_type: str = Query(default="dst", pattern="^(src|dst)$"),
     limit: int = Query(default=20, le=100),
+    protocol: str | None = None,
+    ip_version: str | None = Query(default=None, pattern="^(4|6)$"),
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
     user: dict = Depends(get_current_user),
 ) -> dict:
-    return {"records": netflow_top_ports(epoch_begin, epoch_end, port_type, limit)}
+    return {"records": netflow_top_ports(
+        epoch_begin, epoch_end, port_type, limit,
+        **_nf_query_filters(protocol, ip_version, asn, src_ip, dst_ip),
+    )}
 
 
 @app.get("/api/netflow/top-asn")
@@ -179,18 +224,34 @@ def get_netflow_top_asn(
     epoch_end: int | None = None,
     asn_type: str = Query(default="src", pattern="^(src|dst)$"),
     limit: int = Query(default=20, le=100),
+    protocol: str | None = None,
+    ip_version: str | None = Query(default=None, pattern="^(4|6)$"),
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
     user: dict = Depends(get_current_user),
 ) -> dict:
-    return {"records": netflow_top_asn(epoch_begin, epoch_end, asn_type, limit)}
+    return {"records": netflow_top_asn(
+        epoch_begin, epoch_end, asn_type, limit,
+        **_nf_query_filters(protocol, ip_version, asn, src_ip, dst_ip),
+    )}
 
 
 @app.get("/api/netflow/protocols")
 def get_netflow_protocols(
     epoch_begin: int | None = None,
     epoch_end: int | None = None,
+    protocol: str | None = None,
+    ip_version: str | None = Query(default=None, pattern="^(4|6)$"),
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
     user: dict = Depends(get_current_user),
 ) -> dict:
-    return {"records": netflow_protocols(epoch_begin, epoch_end)}
+    return {"records": netflow_protocols(
+        epoch_begin, epoch_end,
+        **_nf_query_filters(protocol, ip_version, asn, src_ip, dst_ip),
+    )}
 
 
 @app.get("/api/netflow/bandwidth-by-client")
@@ -198,9 +259,17 @@ def get_netflow_bandwidth_by_client(
     epoch_begin: int | None = None,
     epoch_end: int | None = None,
     limit: int = Query(default=20, le=100),
+    protocol: str | None = None,
+    ip_version: str | None = Query(default=None, pattern="^(4|6)$"),
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
     user: dict = Depends(get_current_user),
 ) -> dict:
-    return {"records": netflow_bandwidth_by_client(epoch_begin, epoch_end, limit)}
+    return {"records": netflow_bandwidth_by_client(
+        epoch_begin, epoch_end, limit,
+        **_nf_query_filters(protocol, ip_version, asn, src_ip, dst_ip),
+    )}
 
 
 @app.get("/api/netflow/timeseries")
@@ -209,9 +278,17 @@ def get_netflow_timeseries(
     epoch_end: int | None = None,
     bucket_seconds: int = Query(default=60, ge=10, le=3600),
     ip: str | None = None,
+    protocol: str | None = None,
+    ip_version: str | None = Query(default=None, pattern="^(4|6)$"),
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
     user: dict = Depends(get_current_user),
 ) -> dict:
-    return {"records": netflow_timeseries(epoch_begin, epoch_end, bucket_seconds, ip)}
+    return {"records": netflow_timeseries(
+        epoch_begin, epoch_end, bucket_seconds, ip,
+        **_nf_query_filters(protocol, ip_version, asn, src_ip, dst_ip),
+    )}
 
 
 @app.get("/api/netflow/incidents")
@@ -220,9 +297,17 @@ def get_netflow_incidents(
     epoch_end: int | None = None,
     severity: str | None = None,
     limit: int = Query(default=200, le=1000),
+    protocol: str | None = None,
+    ip_version: str | None = Query(default=None, pattern="^(4|6)$"),
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
     user: dict = Depends(get_current_user),
 ) -> dict:
-    return {"records": netflow_incidents(epoch_begin, epoch_end, severity, limit)}
+    return {"records": netflow_incidents(
+        epoch_begin, epoch_end, severity, limit,
+        **_nf_query_filters(protocol, ip_version, asn, src_ip, dst_ip),
+    )}
 
 
 # ─── Reports ──────────────────────────────────────────────────────────────────

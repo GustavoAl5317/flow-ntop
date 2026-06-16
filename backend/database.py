@@ -377,18 +377,108 @@ def _epoch_clause(clauses: list[str], params: list, epoch_begin: int | None, epo
         params.append(epoch_end)
 
 
+def _nf_filters(
+    clauses: list[str],
+    params: list,
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    protocol: str | None = None,
+    ip_version: str | None = None,
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
+) -> None:
+    """Append WHERE clauses for GoFlow2 NetFlow queries (mutates clauses/params)."""
+    clauses.append("source = 'goflow2'")
+    if epoch_begin is not None:
+        clauses.append("tstamp >= ?")
+        params.append(epoch_begin)
+    if epoch_end is not None:
+        clauses.append("tstamp <= ?")
+        params.append(epoch_end)
+    if protocol:
+        clauses.append("protocol = ?")
+        params.append(protocol.upper())
+    if ip_version == "4":
+        clauses.append("(src_ip IS NULL OR src_ip NOT LIKE '%:%') AND (dst_ip IS NULL OR dst_ip NOT LIKE '%:%')")
+    elif ip_version == "6":
+        clauses.append("(src_ip LIKE '%:%' OR dst_ip LIKE '%:%')")
+    if asn is not None:
+        clauses.append("(src_as = ? OR dst_as = ?)")
+        params.extend([asn, asn])
+    if src_ip:
+        clauses.append("src_ip = ?")
+        params.append(src_ip)
+    if dst_ip:
+        clauses.append("dst_ip = ?")
+        params.append(dst_ip)
+
+
+def netflow_summary(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    bucket_seconds: int = 60,
+    protocol: str | None = None,
+    ip_version: str | None = None,
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
+) -> dict:
+    """Consolidated metrics for the period: totals + peak/avg/current bandwidth."""
+    clauses: list[str] = []
+    params: list = []
+    _nf_filters(clauses, params, epoch_begin, epoch_end, protocol, ip_version, asn, src_ip, dst_ip)
+    where = " AND ".join(clauses)
+
+    with get_db() as conn:
+        agg = conn.execute(
+            f"""SELECT COUNT(*) AS total_flows,
+                       COALESCE(SUM(bytes), 0) AS total_bytes,
+                       COALESCE(SUM(packets), 0) AS total_packets
+                FROM events WHERE {where}""",
+            params,
+        ).fetchone()
+
+        bucket_rows = conn.execute(
+            f"""SELECT (tstamp / ?) * ? AS bucket, SUM(bytes) AS bucket_bytes
+                FROM events WHERE {where}
+                GROUP BY bucket ORDER BY bucket ASC""",
+            [bucket_seconds, bucket_seconds, *params],
+        ).fetchall()
+
+    bucket_bytes_list = [r["bucket_bytes"] or 0 for r in bucket_rows]
+    peak_bytes = max(bucket_bytes_list) if bucket_bytes_list else 0
+    avg_bytes = sum(bucket_bytes_list) / len(bucket_bytes_list) if bucket_bytes_list else 0
+    current_bytes = bucket_bytes_list[-1] if bucket_bytes_list else 0
+
+    def to_mbps(b: float) -> float:
+        return round(b * 8 / max(bucket_seconds, 1) / 1_000_000, 3)
+
+    return {
+        "total_flows": agg["total_flows"] or 0,
+        "total_bytes": agg["total_bytes"] or 0,
+        "total_packets": agg["total_packets"] or 0,
+        "peak_mbps": to_mbps(peak_bytes),
+        "avg_mbps": to_mbps(avg_bytes),
+        "current_mbps": to_mbps(current_bytes),
+    }
+
+
 def netflow_top_talkers(
     epoch_begin: int | None = None,
     epoch_end: int | None = None,
     direction: str = "src",
     limit: int = 20,
+    protocol: str | None = None,
+    ip_version: str | None = None,
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
 ) -> list[dict]:
-    """Top IPs by traffic volume. direction='src' (origin) or 'dst' (destination)."""
     ip_col = "dst_ip" if direction == "dst" else "src_ip"
-
-    clauses = ["source = 'goflow2'", f"{ip_col} IS NOT NULL"]
+    clauses = [f"{ip_col} IS NOT NULL"]
     params: list = []
-    _epoch_clause(clauses, params, epoch_begin, epoch_end)
+    _nf_filters(clauses, params, epoch_begin, epoch_end, protocol, ip_version, asn, src_ip, dst_ip)
     where = " AND ".join(clauses)
 
     with get_db() as conn:
@@ -399,8 +489,7 @@ def netflow_top_talkers(
                        COUNT(*) AS flows,
                        MAX(src_as) AS src_as,
                        MAX(dst_as) AS dst_as
-                FROM events
-                WHERE {where}
+                FROM events WHERE {where}
                 GROUP BY {ip_col}
                 ORDER BY total_bytes DESC
                 LIMIT ?""",
@@ -414,13 +503,16 @@ def netflow_top_ports(
     epoch_end: int | None = None,
     port_type: str = "dst",
     limit: int = 20,
+    protocol: str | None = None,
+    ip_version: str | None = None,
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
 ) -> list[dict]:
-    """Top ports by traffic volume. port_type='dst' or 'src'."""
     port_col = "src_port" if port_type == "src" else "dst_port"
-
-    clauses = ["source = 'goflow2'", f"{port_col} IS NOT NULL"]
+    clauses = [f"{port_col} IS NOT NULL"]
     params: list = []
-    _epoch_clause(clauses, params, epoch_begin, epoch_end)
+    _nf_filters(clauses, params, epoch_begin, epoch_end, protocol, ip_version, asn, src_ip, dst_ip)
     where = " AND ".join(clauses)
 
     with get_db() as conn:
@@ -430,8 +522,7 @@ def netflow_top_ports(
                        SUM(bytes) AS total_bytes,
                        SUM(packets) AS total_packets,
                        COUNT(*) AS flows
-                FROM events
-                WHERE {where}
+                FROM events WHERE {where}
                 GROUP BY {port_col}, protocol
                 ORDER BY total_bytes DESC
                 LIMIT ?""",
@@ -445,13 +536,16 @@ def netflow_top_asn(
     epoch_end: int | None = None,
     asn_type: str = "src",
     limit: int = 20,
+    protocol: str | None = None,
+    ip_version: str | None = None,
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
 ) -> list[dict]:
-    """Top ASNs by traffic volume. asn_type='src' or 'dst'."""
     asn_col = "src_as" if asn_type == "src" else "dst_as"
-
-    clauses = ["source = 'goflow2'", f"{asn_col} IS NOT NULL", f"{asn_col} != 0"]
+    clauses = [f"{asn_col} IS NOT NULL", f"{asn_col} != 0"]
     params: list = []
-    _epoch_clause(clauses, params, epoch_begin, epoch_end)
+    _nf_filters(clauses, params, epoch_begin, epoch_end, protocol, ip_version, asn, src_ip, dst_ip)
     where = " AND ".join(clauses)
 
     with get_db() as conn:
@@ -460,8 +554,7 @@ def netflow_top_asn(
                        SUM(bytes) AS total_bytes,
                        SUM(packets) AS total_packets,
                        COUNT(*) AS flows
-                FROM events
-                WHERE {where}
+                FROM events WHERE {where}
                 GROUP BY {asn_col}
                 ORDER BY total_bytes DESC
                 LIMIT ?""",
@@ -473,11 +566,15 @@ def netflow_top_asn(
 def netflow_protocols(
     epoch_begin: int | None = None,
     epoch_end: int | None = None,
+    protocol: str | None = None,
+    ip_version: str | None = None,
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
 ) -> list[dict]:
-    """Traffic breakdown by protocol."""
-    clauses = ["source = 'goflow2'", "protocol IS NOT NULL"]
+    clauses = ["protocol IS NOT NULL"]
     params: list = []
-    _epoch_clause(clauses, params, epoch_begin, epoch_end)
+    _nf_filters(clauses, params, epoch_begin, epoch_end, protocol, ip_version, asn, src_ip, dst_ip)
     where = " AND ".join(clauses)
 
     with get_db() as conn:
@@ -486,8 +583,7 @@ def netflow_protocols(
                        SUM(bytes) AS total_bytes,
                        SUM(packets) AS total_packets,
                        COUNT(*) AS flows
-                FROM events
-                WHERE {where}
+                FROM events WHERE {where}
                 GROUP BY protocol
                 ORDER BY total_bytes DESC""",
             params,
@@ -499,11 +595,15 @@ def netflow_bandwidth_by_client(
     epoch_begin: int | None = None,
     epoch_end: int | None = None,
     limit: int = 20,
+    protocol: str | None = None,
+    ip_version: str | None = None,
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
 ) -> list[dict]:
-    """Top clients (by src_ip) ranked by total bandwidth."""
-    clauses = ["source = 'goflow2'", "src_ip IS NOT NULL"]
+    clauses = ["src_ip IS NOT NULL"]
     params: list = []
-    _epoch_clause(clauses, params, epoch_begin, epoch_end)
+    _nf_filters(clauses, params, epoch_begin, epoch_end, protocol, ip_version, asn, src_ip, dst_ip)
     where = " AND ".join(clauses)
 
     with get_db() as conn:
@@ -514,8 +614,7 @@ def netflow_bandwidth_by_client(
                        COUNT(*) AS flows,
                        SUM(CASE WHEN severity IN ('critical','error') THEN 1 ELSE 0 END) AS critical,
                        SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) AS warning
-                FROM events
-                WHERE {where}
+                FROM events WHERE {where}
                 GROUP BY src_ip
                 ORDER BY total_bytes DESC
                 LIMIT ?""",
@@ -529,11 +628,15 @@ def netflow_timeseries(
     epoch_end: int | None = None,
     bucket_seconds: int = 60,
     ip: str | None = None,
+    protocol: str | None = None,
+    ip_version: str | None = None,
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
 ) -> list[dict]:
-    """Bandwidth/packets over time, bucketed. Optionally filter by ip (src or dst)."""
-    clauses = ["source = 'goflow2'"]
+    clauses: list[str] = []
     params: list = []
-    _epoch_clause(clauses, params, epoch_begin, epoch_end)
+    _nf_filters(clauses, params, epoch_begin, epoch_end, protocol, ip_version, asn, src_ip, dst_ip)
     if ip:
         clauses.append("(src_ip = ? OR dst_ip = ?)")
         params.extend([ip, ip])
@@ -547,8 +650,7 @@ def netflow_timeseries(
                        COUNT(*) AS flows,
                        SUM(CASE WHEN severity IN ('critical','error') THEN 1 ELSE 0 END) AS critical,
                        SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) AS warning
-                FROM events
-                WHERE {where}
+                FROM events WHERE {where}
                 GROUP BY bucket
                 ORDER BY bucket ASC""",
             [bucket_seconds, bucket_seconds, *params],
@@ -561,11 +663,15 @@ def netflow_incidents(
     epoch_end: int | None = None,
     severity: str | None = None,
     limit: int = 200,
+    protocol: str | None = None,
+    ip_version: str | None = None,
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
 ) -> list[dict]:
-    """Recent NetFlow-sourced flows flagged with elevated severity (incidents)."""
-    clauses = ["source = 'goflow2'", "severity IS NOT NULL", "severity != 'info'"]
+    clauses = ["severity IS NOT NULL", "severity != 'info'"]
     params: list = []
-    _epoch_clause(clauses, params, epoch_begin, epoch_end)
+    _nf_filters(clauses, params, epoch_begin, epoch_end, protocol, ip_version, asn, src_ip, dst_ip)
     if severity:
         clauses.append("severity = ?")
         params.append(severity)
@@ -575,8 +681,7 @@ def netflow_incidents(
         rows = conn.execute(
             f"""SELECT id, tstamp, severity, score, proto, ip, cli_ip,
                        src_port, dst_port, bytes, packets, duration
-                FROM events
-                WHERE {where}
+                FROM events WHERE {where}
                 ORDER BY tstamp DESC
                 LIMIT ?""",
             [*params, limit],

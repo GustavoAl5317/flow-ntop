@@ -230,10 +230,24 @@ export interface NetflowIncident {
   duration: number | null;
 }
 
+export interface NetflowSummary {
+  total_flows: number;
+  total_bytes: number;
+  total_packets: number;
+  peak_mbps: number;
+  avg_mbps: number;
+  current_mbps: number;
+}
+
 interface NetflowParams {
   epoch_begin?: number;
   epoch_end?: number;
   limit?: number;
+  protocol?: string;
+  ip_version?: '4' | '6';
+  asn?: number;
+  src_ip?: string;
+  dst_ip?: string;
 }
 
 function buildQS(params: object): string {
@@ -243,6 +257,12 @@ function buildQS(params: object): string {
   }
   const s = qs.toString();
   return s ? `?${s}` : '';
+}
+
+export async function getNetflowSummary(
+  params: NetflowParams & { bucket_seconds?: number } = {},
+): Promise<NetflowSummary> {
+  return apiFetch(`/netflow/summary${buildQS(params)}`);
 }
 
 export async function getNetflowTopTalkers(
