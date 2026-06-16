@@ -115,7 +115,7 @@ export function CorrelationPage() {
   const [attacks, setAttacks] = useState<CorrelatedAttack[]>([]);
   const [loading, setLoading] = useState(false);
   const [rangeSeconds, setRangeSeconds] = useState(3600);
-  const [minEvents, setMinEvents] = useState(3);
+  const [minEvents, setMinEvents] = useState(50);
 
   const load = useCallback(async () => {
     setLoading(true);
