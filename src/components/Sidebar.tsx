@@ -1,8 +1,9 @@
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Zap, Bell, BarChart2, Search, Settings, Gauge, Network, Shield, Router, GitMerge } from 'lucide-react';
+import { LayoutDashboard, Zap, Bell, BarChart2, Search, Settings, Gauge, Network, Shield, Router, GitMerge, TrendingUp } from 'lucide-react';
 
 const navItems = [
   { icon: LayoutDashboard, label: 'Dashboard',          to: '/'                },
+  { icon: TrendingUp,      label: 'Executivo',          to: '/executivo'       },
   { icon: Zap,             label: 'Alertas',            to: '/alertas'         },
   { icon: Bell,            label: 'Histórico',          to: '/historico'       },
   { icon: Search,          label: 'Consulta',           to: '/consulta'        },
