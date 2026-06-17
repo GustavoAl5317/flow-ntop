@@ -28,8 +28,11 @@ from database import (
     list_ip_blocks,
     list_reports,
     list_thresholds,
+    netflow_asn_timeseries,
     netflow_bandwidth_by_client,
     netflow_incidents,
+    netflow_ip_timeseries,
+    netflow_protocol_timeseries,
     netflow_protocols,
     netflow_summary,
     netflow_timeseries,
@@ -336,6 +339,41 @@ def get_netflow_incidents(
         epoch_begin, epoch_end, severity, limit,
         **_nf_query_filters(protocol, ip_version, asn, src_ip, dst_ip),
     )}
+
+
+@app.get("/api/netflow/ip-timeseries")
+def get_netflow_ip_timeseries(
+    ip: str,
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    bucket_seconds: int = Query(default=300, ge=10, le=86400),
+    direction: str = Query(default="both", pattern="^(src|dst|both)$"),
+    user: dict = Depends(get_current_user),
+) -> dict:
+    return {"records": netflow_ip_timeseries(ip, epoch_begin, epoch_end, bucket_seconds, direction)}
+
+
+@app.get("/api/netflow/protocol-timeseries")
+def get_netflow_protocol_timeseries(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    bucket_seconds: int = Query(default=300, ge=10, le=86400),
+    top_n: int = Query(default=5, ge=1, le=10),
+    user: dict = Depends(get_current_user),
+) -> dict:
+    return netflow_protocol_timeseries(epoch_begin, epoch_end, bucket_seconds, top_n)
+
+
+@app.get("/api/netflow/asn-timeseries")
+def get_netflow_asn_timeseries(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    bucket_seconds: int = Query(default=300, ge=10, le=86400),
+    asn_type: str = Query(default="src", pattern="^(src|dst)$"),
+    top_n: int = Query(default=5, ge=1, le=10),
+    user: dict = Depends(get_current_user),
+) -> dict:
+    return netflow_asn_timeseries(epoch_begin, epoch_end, bucket_seconds, asn_type, top_n)
 
 
 # ─── Reports ──────────────────────────────────────────────────────────────────

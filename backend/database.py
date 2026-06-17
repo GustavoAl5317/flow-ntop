@@ -723,6 +723,144 @@ def netflow_incidents(
     return [dict(r) for r in rows]
 
 
+def netflow_ip_timeseries(
+    ip: str,
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    bucket_seconds: int = 60,
+    direction: str = "both",
+) -> list[dict]:
+    """Timeseries de bytes/pacotes/fluxos para um IP específico (src, dst ou ambos)."""
+    clauses: list[str] = []
+    params: list = []
+    _nf_filters(clauses, params, epoch_begin, epoch_end)
+    if direction == "src":
+        clauses.append("src_ip = ?")
+        params.append(ip)
+    elif direction == "dst":
+        clauses.append("dst_ip = ?")
+        params.append(ip)
+    else:
+        clauses.append("(src_ip = ? OR dst_ip = ?)")
+        params.extend([ip, ip])
+    where = " AND ".join(clauses)
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT (tstamp / ?) * ? AS bucket,
+                       SUM(bytes)   AS total_bytes,
+                       SUM(packets) AS total_packets,
+                       COUNT(*)     AS flows
+                FROM events WHERE {where}
+                GROUP BY bucket ORDER BY bucket ASC""",
+            [bucket_seconds, bucket_seconds, *params],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def netflow_protocol_timeseries(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    bucket_seconds: int = 300,
+    top_n: int = 5,
+) -> dict:
+    """Timeseries de bytes por protocolo (top N protocolos do período)."""
+    clauses: list[str] = []
+    params: list = []
+    _nf_filters(clauses, params, epoch_begin, epoch_end)
+    clauses.append("protocol IS NOT NULL")
+    where = " AND ".join(clauses)
+
+    with get_db() as conn:
+        # Top protocols by total bytes in range
+        top_protos = [
+            r["protocol"] for r in conn.execute(
+                f"""SELECT protocol, SUM(bytes) AS b FROM events WHERE {where}
+                    GROUP BY protocol ORDER BY b DESC LIMIT ?""",
+                [*params, top_n],
+            ).fetchall()
+        ]
+
+        if not top_protos:
+            return {"protocols": [], "series": []}
+
+        placeholders = ",".join("?" for _ in top_protos)
+        rows = conn.execute(
+            f"""SELECT (tstamp / ?) * ? AS bucket,
+                       protocol,
+                       SUM(bytes) AS bytes,
+                       COUNT(*)   AS flows
+                FROM events WHERE {where} AND protocol IN ({placeholders})
+                GROUP BY bucket, protocol
+                ORDER BY bucket ASC""",
+            [bucket_seconds, bucket_seconds, *params, *top_protos],
+        ).fetchall()
+
+    # Pivot: bucket → {proto: bytes}
+    bucket_map: dict[int, dict[str, float]] = {}
+    for r in rows:
+        b = r["bucket"]
+        if b not in bucket_map:
+            bucket_map[b] = {p: 0 for p in top_protos}
+        bucket_map[b][r["protocol"]] = r["bytes"] or 0
+
+    series = [{"bucket": b, **vals} for b, vals in sorted(bucket_map.items())]
+    return {"protocols": top_protos, "series": series}
+
+
+def netflow_asn_timeseries(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    bucket_seconds: int = 300,
+    asn_type: str = "src",
+    top_n: int = 5,
+) -> dict:
+    """Timeseries de bytes por ASN (top N ASNs do período)."""
+    asn_col = "src_as" if asn_type == "src" else "dst_as"
+    clauses: list[str] = []
+    params: list = []
+    _nf_filters(clauses, params, epoch_begin, epoch_end)
+    clauses.extend([f"{asn_col} IS NOT NULL", f"{asn_col} != 0"])
+    where = " AND ".join(clauses)
+
+    with get_db() as conn:
+        top_asns = [
+            r[asn_col] for r in conn.execute(
+                f"""SELECT {asn_col}, SUM(bytes) AS b FROM events WHERE {where}
+                    GROUP BY {asn_col} ORDER BY b DESC LIMIT ?""",
+                [*params, top_n],
+            ).fetchall()
+        ]
+
+        if not top_asns:
+            return {"asns": [], "series": []}
+
+        placeholders = ",".join("?" for _ in top_asns)
+        rows = conn.execute(
+            f"""SELECT (tstamp / ?) * ? AS bucket,
+                       {asn_col} AS asn,
+                       SUM(bytes) AS bytes,
+                       COUNT(*)   AS flows
+                FROM events WHERE {where} AND {asn_col} IN ({placeholders})
+                GROUP BY bucket, {asn_col}
+                ORDER BY bucket ASC""",
+            [bucket_seconds, bucket_seconds, *params, *top_asns],
+        ).fetchall()
+
+    asn_labels = [str(a) for a in top_asns]
+    bucket_map: dict[int, dict[str, float]] = {}
+    for r in rows:
+        b = r["bucket"]
+        if b not in bucket_map:
+            bucket_map[b] = {a: 0 for a in asn_labels}
+        key = str(r["asn"])
+        if key in bucket_map[b]:
+            bucket_map[b][key] = r["bytes"] or 0
+
+    series = [{"bucket": b, **vals} for b, vals in sorted(bucket_map.items())]
+    return {"asns": top_asns, "series": series}
+
+
 # ─── IP Blocks (prefixos monitorados) ────────────────────────────────────────
 
 def list_ip_blocks() -> list[dict]:

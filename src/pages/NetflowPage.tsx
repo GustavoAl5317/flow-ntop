@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Card, Table, Tag, Select, Button, Input, message } from 'antd';
+import { Card, Table, Tag, Select, Button, Input, message, Spin } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import Chart from 'react-apexcharts';
 import type { ApexOptions } from 'apexcharts';
@@ -14,6 +14,9 @@ import {
   getNetflowBandwidthByClient,
   getNetflowIncidents,
   getNetflowTimeseries,
+  getNetflowIpTimeseries,
+  getNetflowProtocolTimeseries,
+  getNetflowAsnTimeseries,
   type NetflowSummary,
   type NetflowTopTalker,
   type NetflowTopPort,
@@ -22,6 +25,8 @@ import {
   type NetflowBandwidthClient,
   type NetflowIncident,
   type NetflowTimeseriesPoint,
+  type NetflowProtoTimeseriesResult,
+  type NetflowAsnTimeseriesResult,
 } from '../services/backendApi';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -56,6 +61,9 @@ const PROTOCOL_OPTIONS = [
   'TCP', 'UDP', 'ICMP', 'ICMPv6', 'GRE', 'ESP', 'SCTP', 'OSPF',
 ].map(p => ({ label: p, value: p }));
 
+const PROTO_PALETTE = ['#00c8f0', '#8b5cf6', '#f59e0b', '#10b981', '#ff3b3b', '#ec4899', '#3b82f6', '#f97316'];
+const ASN_PALETTE   = ['#00c8f0', '#8b5cf6', '#f59e0b', '#10b981', '#ff6b6b', '#06b6d4', '#84cc16'];
+
 function bucketSecondsFor(rangeSeconds: number): number {
   if (rangeSeconds <= 3600)        return 60;
   if (rangeSeconds <= 6 * 3600)   return 300;
@@ -89,19 +97,14 @@ function hasActiveFilters(f: Filters): boolean {
 
 // ─── KPI cards ────────────────────────────────────────────────────────────────
 
-interface KpiCardsProps {
-  summary: NetflowSummary | null;
-  loading: boolean;
-}
-
-function NetflowKpiCards({ summary, loading }: KpiCardsProps) {
+function NetflowKpiCards({ summary, loading }: { summary: NetflowSummary | null; loading: boolean }) {
   const metrics = [
-    { label: 'Banda Atual',        value: summary ? fmtMbps(summary.current_mbps) : '—', color: '#00c8f0' },
-    { label: 'Pico do Período',    value: summary ? fmtMbps(summary.peak_mbps)    : '—', color: '#8b5cf6' },
-    { label: 'Média de Consumo',   value: summary ? fmtMbps(summary.avg_mbps)     : '—', color: '#f59e0b' },
-    { label: 'Total Processado',   value: summary ? formatBytes(summary.total_bytes)                      : '—', color: '#10b981' },
-    { label: 'Total de Fluxos',    value: summary ? summary.total_flows.toLocaleString('pt-BR')           : '—', color: '#64748b' },
-    { label: 'Total de Pacotes',   value: summary ? summary.total_packets.toLocaleString('pt-BR')         : '—', color: '#64748b' },
+    { label: 'Banda Atual',      value: summary ? fmtMbps(summary.current_mbps)   : '—', color: '#00c8f0' },
+    { label: 'Pico do Período',  value: summary ? fmtMbps(summary.peak_mbps)       : '—', color: '#8b5cf6' },
+    { label: 'Média de Consumo', value: summary ? fmtMbps(summary.avg_mbps)        : '—', color: '#f59e0b' },
+    { label: 'Total Processado', value: summary ? formatBytes(summary.total_bytes)  : '—', color: '#10b981' },
+    { label: 'Total de Fluxos',  value: summary ? summary.total_flows.toLocaleString('pt-BR') : '—', color: '#64748b' },
+    { label: 'Total de Pacotes', value: summary ? summary.total_packets.toLocaleString('pt-BR') : '—', color: '#64748b' },
   ];
 
   return (
@@ -121,64 +124,368 @@ function NetflowKpiCards({ summary, loading }: KpiCardsProps) {
   );
 }
 
+// ─── IP timeseries mini chart (expandable row) ────────────────────────────────
+
+interface IpHistoryChartProps {
+  ip: string;
+  epochBegin: number;
+  epochEnd: number;
+  bucketSeconds: number;
+}
+
+function IpHistoryChart({ ip, epochBegin, epochEnd, bucketSeconds }: IpHistoryChartProps) {
+  const [data, setData] = useState<{ bucket: number; total_bytes: number; flows: number }[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    getNetflowIpTimeseries({ ip, epoch_begin: epochBegin, epoch_end: epochEnd, bucket_seconds: bucketSeconds, direction: 'both' })
+      .then(r => { if (!cancelled) { setData(r.records); setLoading(false); } })
+      .catch(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [ip, epochBegin, epochEnd, bucketSeconds]);
+
+  if (loading) return <div style={{ padding: '16px 32px', textAlign: 'center' }}><Spin size="small" /></div>;
+  if (!data.length) return <div style={{ padding: '16px 32px', color: '#475569', fontSize: 12, textAlign: 'center' }}>Sem dados para este IP no período.</div>;
+
+  const labels  = data.map(p => dayjs.unix(p.bucket).format('DD/MM HH:mm'));
+  const mbps    = data.map(p => Number(((p.total_bytes ?? 0) * 8 / bucketSeconds / 1_000_000).toFixed(3)));
+  const peakMbps = Math.max(...mbps, 0);
+  const avgMbps  = mbps.reduce((s, v) => s + v, 0) / (mbps.length || 1);
+
+  const opts: ApexOptions = {
+    chart: { background: 'transparent', toolbar: { show: false }, animations: { enabled: false }, sparkline: { enabled: false } },
+    colors: ['#00c8f0'],
+    fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.3, opacityTo: 0.01, stops: [0, 90, 100] } },
+    stroke: { curve: 'smooth', width: 2 },
+    xaxis: { categories: labels, labels: { style: { colors: '#475569', fontSize: '10px' } }, tickAmount: 6 },
+    yaxis: { labels: { style: { colors: '#475569', fontSize: '10px' }, formatter: v => `${v.toFixed(1)}M` } },
+    grid: { borderColor: '#1e2d4a', strokeDashArray: 4 },
+    tooltip: { theme: 'dark' },
+    dataLabels: { enabled: false },
+  };
+
+  return (
+    <div style={{ padding: '8px 24px 4px' }}>
+      <div style={{ display: 'flex', gap: 20, marginBottom: 6, fontSize: 11 }}>
+        <span style={{ color: '#8b5cf6' }}>Pico: <strong style={{ fontFamily: 'monospace' }}>{fmtMbps(peakMbps)}</strong></span>
+        <span style={{ color: '#f59e0b' }}>Média: <strong style={{ fontFamily: 'monospace' }}>{fmtMbps(avgMbps)}</strong></span>
+        <span style={{ color: '#64748b' }}>Buckets: <strong>{data.length}</strong></span>
+      </div>
+      <Chart type="area" options={opts} series={[{ name: 'Mbps', data: mbps }]} height={150} />
+    </div>
+  );
+}
+
+// ─── Protocol evolution chart ──────────────────────────────────────────────────
+
+function ProtocolEvolutionChart({ data, bucketSeconds, loading }: { data: NetflowProtoTimeseriesResult; bucketSeconds: number; loading: boolean }) {
+  if (loading || !data.series.length) {
+    return (
+      <Card title={<span style={{ color: '#94a3b8' }}>Evolução por Protocolo</span>}
+        style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 12 } }}>
+        <p className="text-xs text-center py-8" style={{ color: '#475569' }}>
+          {loading ? 'Carregando…' : 'Sem dados.'}
+        </p>
+      </Card>
+    );
+  }
+
+  const labels = data.series.map(r => dayjs.unix(r['bucket']).format('DD/MM HH:mm'));
+  const series = data.protocols.map((proto, i) => ({
+    name: proto,
+    data: data.series.map(r => Number(((r[proto] ?? 0) * 8 / bucketSeconds / 1_000_000).toFixed(3))),
+    color: PROTO_PALETTE[i % PROTO_PALETTE.length],
+  }));
+
+  const opts: ApexOptions = {
+    chart: { background: 'transparent', toolbar: { show: true, tools: { zoom: true, zoomin: true, zoomout: true, pan: true, reset: true, download: false } }, stacked: true, animations: { enabled: false } },
+    fill: { type: 'gradient', gradient: { opacityFrom: 0.6, opacityTo: 0.1 } },
+    stroke: { curve: 'smooth', width: 1.5 },
+    colors: data.protocols.map((_, i) => PROTO_PALETTE[i % PROTO_PALETTE.length]),
+    xaxis: { categories: labels, labels: { style: { colors: '#475569', fontSize: '10px' }, rotate: 0 }, tickAmount: Math.min(10, labels.length) },
+    yaxis: { labels: { style: { colors: '#475569', fontSize: '11px' }, formatter: v => `${v.toFixed(1)} Mbps` } },
+    grid: { borderColor: '#1e2d4a', strokeDashArray: 4 },
+    tooltip: { theme: 'dark', y: { formatter: v => `${v.toFixed(2)} Mbps` } },
+    legend: { labels: { colors: '#94a3b8' }, fontSize: '12px' },
+    dataLabels: { enabled: false },
+  };
+
+  return (
+    <Card title={<span style={{ color: '#94a3b8' }}>Evolução por Protocolo (Mbps empilhado)</span>}
+      style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 12 } }}>
+      <Chart type="area" options={opts} series={series} height={230} />
+    </Card>
+  );
+}
+
+// ─── ASN evolution chart ───────────────────────────────────────────────────────
+
+function AsnEvolutionChart({ data, bucketSeconds, loading }: { data: NetflowAsnTimeseriesResult; bucketSeconds: number; loading: boolean }) {
+  if (loading || !data.series.length) {
+    return (
+      <Card title={<span style={{ color: '#94a3b8' }}>Evolução por ASN Origem</span>}
+        style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 12 } }}>
+        <p className="text-xs text-center py-8" style={{ color: '#475569' }}>
+          {loading ? 'Carregando…' : 'Sem dados.'}
+        </p>
+      </Card>
+    );
+  }
+
+  const labels = data.series.map(r => dayjs.unix(r['bucket']).format('DD/MM HH:mm'));
+  const series = data.asns.map((asn, i) => ({
+    name: `AS${asn}`,
+    data: data.series.map(r => Number(((r[String(asn)] ?? 0) * 8 / bucketSeconds / 1_000_000).toFixed(3))),
+    color: ASN_PALETTE[i % ASN_PALETTE.length],
+  }));
+
+  const opts: ApexOptions = {
+    chart: { background: 'transparent', toolbar: { show: true, tools: { zoom: true, zoomin: true, zoomout: true, pan: true, reset: true, download: false } }, animations: { enabled: false } },
+    stroke: { curve: 'smooth', width: 2 },
+    colors: data.asns.map((_, i) => ASN_PALETTE[i % ASN_PALETTE.length]),
+    xaxis: { categories: labels, labels: { style: { colors: '#475569', fontSize: '10px' }, rotate: 0 }, tickAmount: Math.min(10, labels.length) },
+    yaxis: { labels: { style: { colors: '#475569', fontSize: '11px' }, formatter: v => `${v.toFixed(1)} Mbps` } },
+    grid: { borderColor: '#1e2d4a', strokeDashArray: 4 },
+    tooltip: { theme: 'dark', y: { formatter: v => `${v.toFixed(2)} Mbps` } },
+    legend: { labels: { colors: '#94a3b8' }, fontSize: '12px' },
+    dataLabels: { enabled: false },
+  };
+
+  return (
+    <Card title={<span style={{ color: '#94a3b8' }}>Evolução Top 5 ASNs Origem (Mbps)</span>}
+      style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 12 } }}>
+      <Chart type="line" options={opts} series={series} height={230} />
+    </Card>
+  );
+}
+
+// ─── Timeseries chart ─────────────────────────────────────────────────────────
+
+type ChartMetric = 'mbps' | 'flows' | 'packets';
+
+interface TimeseriesChartProps {
+  data: NetflowTimeseriesPoint[];
+  loading: boolean;
+  bucketSeconds: number;
+  metric: ChartMetric;
+  onMetricChange: (m: ChartMetric) => void;
+}
+
+function NetflowTimeseriesChart({ data, loading, bucketSeconds, metric, onMetricChange }: TimeseriesChartProps) {
+  if (!data.length) {
+    return (
+      <Card title={<span style={{ color: '#94a3b8' }}>Histórico e Evolução de Tráfego</span>}
+        style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 12 } }}>
+        <p className="text-xs text-center py-12" style={{ color: '#475569' }}>
+          {loading ? 'Carregando série temporal…' : 'Sem dados para o período selecionado.'}
+        </p>
+      </Card>
+    );
+  }
+
+  const labels     = data.map(p => dayjs.unix(p.bucket).format('DD/MM HH:mm'));
+  const mbpsSeries = data.map(p => Number(((p.total_bytes ?? 0) * 8 / bucketSeconds / 1_000_000).toFixed(3)));
+  const flowSeries = data.map(p => p.flows ?? 0);
+  const pktSeries  = data.map(p => p.total_packets ?? 0);
+  const warnSeries = data.map(p => p.warning ?? 0);
+  const critSeries = data.map(p => p.critical ?? 0);
+
+  const peakMbps = Math.max(...mbpsSeries, 0);
+  const avgMbps  = mbpsSeries.reduce((s, v) => s + v, 0) / (mbpsSeries.length || 1);
+
+  const metricSeries = metric === 'mbps' ? mbpsSeries : metric === 'flows' ? flowSeries : pktSeries;
+  const metricLabel  = metric === 'mbps' ? 'Banda (Mbps)' : metric === 'flows' ? 'Fluxos' : 'Pacotes';
+  const metricFmt    = metric === 'mbps'
+    ? (v: number) => `${v.toFixed(2)} Mbps`
+    : (v: number) => v.toLocaleString('pt-BR');
+
+  const options: ApexOptions = {
+    chart: {
+      id: `netflow-ts-${metric}`, background: 'transparent',
+      toolbar: { show: true, tools: { zoom: true, zoomin: true, zoomout: true, pan: true, reset: true, download: false } },
+      animations: { enabled: false }, zoom: { enabled: true },
+    },
+    colors: ['#00c8f0', '#f59e0b', '#ff3b3b'],
+    fill: {
+      type: ['gradient', 'solid', 'solid'],
+      gradient: { shadeIntensity: 1, opacityFrom: 0.35, opacityTo: 0.02, stops: [0, 95, 100] },
+    },
+    stroke: { curve: 'smooth', width: [2, 0, 0] },
+    plotOptions: { bar: { columnWidth: '60%' } },
+    annotations: metric === 'mbps' ? {
+      yaxis: [
+        { y: avgMbps, borderColor: '#f59e0b', borderWidth: 1, strokeDashArray: 4,
+          label: { text: `Média ${avgMbps.toFixed(2)} Mbps`, style: { color: '#f59e0b', background: '#0a0f1e', fontSize: '10px' } } },
+      ],
+    } : {},
+    grid: { borderColor: '#1e2d4a', strokeDashArray: 4, xaxis: { lines: { show: false } } },
+    xaxis: {
+      categories: labels,
+      labels: { style: { colors: '#475569', fontSize: '10px', fontFamily: 'monospace' }, rotate: 0 },
+      axisBorder: { show: false }, axisTicks: { show: false },
+      tickAmount: Math.min(10, labels.length),
+    },
+    yaxis: [
+      { seriesName: metricLabel, labels: { style: { colors: '#475569', fontSize: '11px', fontFamily: 'monospace' }, formatter: metricFmt } },
+      { seriesName: 'Avisos', show: false },
+      { seriesName: 'Críticos', show: false },
+    ],
+    tooltip: { theme: 'dark', x: { show: true } },
+    legend: { labels: { colors: '#94a3b8' }, fontSize: '12px' },
+    dataLabels: { enabled: false },
+  };
+
+  const METRIC_BTN: { key: ChartMetric; label: string }[] = [
+    { key: 'mbps',    label: 'Mbps'    },
+    { key: 'flows',   label: 'Fluxos'  },
+    { key: 'packets', label: 'Pacotes' },
+  ];
+
+  return (
+    <Card
+      title={
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+          <span style={{ color: '#94a3b8' }}>Histórico e Evolução de Tráfego</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {METRIC_BTN.map(({ key, label }) => (
+                <button key={key} onClick={() => onMetricChange(key)}
+                  style={{
+                    padding: '2px 10px', fontSize: 11, fontWeight: 600, borderRadius: 4, border: 'none', cursor: 'pointer',
+                    background: metric === key ? '#00c8f0' : '#1e2d4a',
+                    color: metric === key ? '#000' : '#94a3b8',
+                    transition: 'all 0.15s',
+                  }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 16, fontSize: 11 }}>
+              <span style={{ color: '#8b5cf6' }}>Pico: <strong>{fmtMbps(peakMbps)}</strong></span>
+              <span style={{ color: '#f59e0b' }}>Média: <strong>{fmtMbps(avgMbps)}</strong></span>
+            </div>
+          </div>
+        </div>
+      }
+      style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 12 } }}>
+      <Chart
+        key={`ts-${data.length}-${metric}`}
+        options={options}
+        series={[
+          { name: metricLabel,  type: 'area',   data: metricSeries },
+          { name: 'Avisos',     type: 'column', data: warnSeries  },
+          { name: 'Críticos',   type: 'column', data: critSeries  },
+        ]}
+        type="line"
+        height={290}
+      />
+    </Card>
+  );
+}
+
+// ─── Protocols with percentage bars ───────────────────────────────────────────
+
+function ProtocolsWithBar({ data, loading }: { data: NetflowProtocol[]; loading: boolean }) {
+  const total = data.reduce((s, r) => s + (r.total_bytes ?? 0), 0);
+  return (
+    <Table<NetflowProtocol>
+      size="small" rowKey="protocol" loading={loading} pagination={false}
+      dataSource={data} locale={{ emptyText: 'Sem dados' }}
+      columns={[
+        ...protocolColumns,
+        {
+          title: '%',
+          dataIndex: 'total_bytes',
+          width: 100,
+          render: (v: number) => {
+            const pct = total > 0 ? (v / total) * 100 : 0;
+            return (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <div style={{ flex: 1, height: 6, background: '#1e2d4a', borderRadius: 3 }}>
+                  <div style={{ width: `${pct.toFixed(1)}%`, height: '100%', background: '#00c8f0', borderRadius: 3 }} />
+                </div>
+                <span style={{ fontSize: 10, color: '#64748b', width: 34, textAlign: 'right' }}>
+                  {pct.toFixed(1)}%
+                </span>
+              </div>
+            );
+          },
+        },
+      ]}
+    />
+  );
+}
+
 // ─── main page ────────────────────────────────────────────────────────────────
 
 export function NetflowPage() {
-  const [rangeSeconds, setRangeSeconds] = useState(24 * 3600);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [rangeSeconds, setRangeSeconds]   = useState(24 * 3600);
+  const [loading, setLoading]             = useState(false);
+  const [error, setError]                 = useState<string | null>(null);
+  const [chartMetric, setChartMetric]     = useState<ChartMetric>('mbps');
 
-  // draft = what the user is editing; applied = what load() uses
-  const [draftFilters, setDraftFilters] = useState<Filters>({});
+  const [draftFilters, setDraftFilters]   = useState<Filters>({});
   const [appliedFilters, setAppliedFilters] = useState<Filters>({});
   const appliedRef = useRef(appliedFilters);
   appliedRef.current = appliedFilters;
 
-  const [summary, setSummary]           = useState<NetflowSummary | null>(null);
+  const [summary, setSummary]             = useState<NetflowSummary | null>(null);
   const [topTalkersSrc, setTopTalkersSrc] = useState<NetflowTopTalker[]>([]);
   const [topTalkersDst, setTopTalkersDst] = useState<NetflowTopTalker[]>([]);
-  const [topPorts, setTopPorts]         = useState<NetflowTopPort[]>([]);
-  const [topAsnSrc, setTopAsnSrc]       = useState<NetflowTopAsn[]>([]);
-  const [topAsnDst, setTopAsnDst]       = useState<NetflowTopAsn[]>([]);
-  const [protocols, setProtocols]       = useState<NetflowProtocol[]>([]);
-  const [bandwidth, setBandwidth]       = useState<NetflowBandwidthClient[]>([]);
-  const [incidents, setIncidents]       = useState<NetflowIncident[]>([]);
-  const [timeseries, setTimeseries]     = useState<NetflowTimeseriesPoint[]>([]);
+  const [topPorts, setTopPorts]           = useState<NetflowTopPort[]>([]);
+  const [topAsnSrc, setTopAsnSrc]         = useState<NetflowTopAsn[]>([]);
+  const [topAsnDst, setTopAsnDst]         = useState<NetflowTopAsn[]>([]);
+  const [protocols, setProtocols]         = useState<NetflowProtocol[]>([]);
+  const [bandwidth, setBandwidth]         = useState<NetflowBandwidthClient[]>([]);
+  const [incidents, setIncidents]         = useState<NetflowIncident[]>([]);
+  const [timeseries, setTimeseries]       = useState<NetflowTimeseriesPoint[]>([]);
+  const [protoTs, setProtoTs]             = useState<NetflowProtoTimeseriesResult>({ protocols: [], series: [] });
+  const [asnTs, setAsnTs]                 = useState<NetflowAsnTimeseriesResult>({ asns: [], series: [] });
+
+  // range context for expandable IP charts
+  const [epochRange, setEpochRange]       = useState<{ begin: number; end: number }>({ begin: 0, end: 0 });
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const epoch_end   = Math.floor(Date.now() / 1000);
-    const epoch_begin = epoch_end - rangeSeconds;
+    const epoch_end      = Math.floor(Date.now() / 1000);
+    const epoch_begin    = epoch_end - rangeSeconds;
     const bucket_seconds = bucketSecondsFor(rangeSeconds);
+    setEpochRange({ begin: epoch_begin, end: epoch_end });
     const fp = filtersToParams(appliedRef.current);
     const base = { epoch_begin, epoch_end, ...fp };
     const limited = { ...base, limit: 15 };
 
     const results = await Promise.allSettled([
-      getNetflowSummary({ ...base, bucket_seconds }),
-      getNetflowTopTalkers({ ...limited, direction: 'src' }),
-      getNetflowTopTalkers({ ...limited, direction: 'dst' }),
-      getNetflowTopPorts({ ...limited, port_type: 'dst' }),
-      getNetflowTopAsn({ ...limited, asn_type: 'src' }),
-      getNetflowTopAsn({ ...limited, asn_type: 'dst' }),
-      getNetflowProtocols(base),
-      getNetflowBandwidthByClient(limited),
-      getNetflowIncidents({ ...base, limit: 50 }),
-      getNetflowTimeseries({ ...base, bucket_seconds }),
+      getNetflowSummary({ ...base, bucket_seconds }),           // 0
+      getNetflowTopTalkers({ ...limited, direction: 'src' }),  // 1
+      getNetflowTopTalkers({ ...limited, direction: 'dst' }),  // 2
+      getNetflowTopPorts({ ...limited, port_type: 'dst' }),    // 3
+      getNetflowTopAsn({ ...limited, asn_type: 'src' }),       // 4
+      getNetflowTopAsn({ ...limited, asn_type: 'dst' }),       // 5
+      getNetflowProtocols(base),                                // 6
+      getNetflowBandwidthByClient(limited),                    // 7
+      getNetflowIncidents({ ...base, limit: 50 }),             // 8
+      getNetflowTimeseries({ ...base, bucket_seconds }),       // 9
+      getNetflowProtocolTimeseries({ epoch_begin, epoch_end, bucket_seconds }), // 10
+      getNetflowAsnTimeseries({ epoch_begin, epoch_end, bucket_seconds }),      // 11
     ]);
 
-    const [r0, r1, r2, r3, r4, r5, r6, r7, r8, r9] = results;
-    if (r0.status === 'fulfilled') setSummary(r0.value);           else setSummary(null);
-    if (r1.status === 'fulfilled') setTopTalkersSrc(r1.value.records); else setTopTalkersSrc([]);
-    if (r2.status === 'fulfilled') setTopTalkersDst(r2.value.records); else setTopTalkersDst([]);
-    if (r3.status === 'fulfilled') setTopPorts(r3.value.records);      else setTopPorts([]);
-    if (r4.status === 'fulfilled') setTopAsnSrc(r4.value.records);     else setTopAsnSrc([]);
-    if (r5.status === 'fulfilled') setTopAsnDst(r5.value.records);     else setTopAsnDst([]);
-    if (r6.status === 'fulfilled') setProtocols(r6.value.records);     else setProtocols([]);
-    if (r7.status === 'fulfilled') setBandwidth(r7.value.records);      else setBandwidth([]);
-    if (r8.status === 'fulfilled') setIncidents(r8.value.records);     else setIncidents([]);
-    if (r9.status === 'fulfilled') setTimeseries(r9.value.records);    else setTimeseries([]);
+    const [r0,r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11] = results;
+    if (r0.status === 'fulfilled')  setSummary(r0.value);                else setSummary(null);
+    if (r1.status === 'fulfilled')  setTopTalkersSrc(r1.value.records); else setTopTalkersSrc([]);
+    if (r2.status === 'fulfilled')  setTopTalkersDst(r2.value.records); else setTopTalkersDst([]);
+    if (r3.status === 'fulfilled')  setTopPorts(r3.value.records);       else setTopPorts([]);
+    if (r4.status === 'fulfilled')  setTopAsnSrc(r4.value.records);      else setTopAsnSrc([]);
+    if (r5.status === 'fulfilled')  setTopAsnDst(r5.value.records);      else setTopAsnDst([]);
+    if (r6.status === 'fulfilled')  setProtocols(r6.value.records);      else setProtocols([]);
+    if (r7.status === 'fulfilled')  setBandwidth(r7.value.records);       else setBandwidth([]);
+    if (r8.status === 'fulfilled')  setIncidents(r8.value.records);      else setIncidents([]);
+    if (r9.status === 'fulfilled')  setTimeseries(r9.value.records);     else setTimeseries([]);
+    if (r10.status === 'fulfilled') setProtoTs(r10.value);               else setProtoTs({ protocols: [], series: [] });
+    if (r11.status === 'fulfilled') setAsnTs(r11.value);                 else setAsnTs({ asns: [], series: [] });
 
     if (results.every(r => r.status === 'rejected')) {
       setError('Não foi possível carregar dados de NetFlow. Verifique a conexão com o backend.');
@@ -188,14 +495,8 @@ export function NetflowPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const applyFilters = () => {
-    setAppliedFilters({ ...draftFilters });
-  };
-
-  const clearFilters = () => {
-    setDraftFilters({});
-    setAppliedFilters({});
-  };
+  const applyFilters = () => setAppliedFilters({ ...draftFilters });
+  const clearFilters = () => { setDraftFilters({}); setAppliedFilters({}); };
 
   const handleSelectFilter = (key: keyof Filters, value: string | undefined) => {
     const next = { ...draftFilters, [key]: value };
@@ -207,8 +508,22 @@ export function NetflowPage() {
 
   const hasData = topTalkersSrc.length > 0 || topTalkersDst.length > 0 || protocols.length > 0
     || bandwidth.length > 0 || timeseries.length > 0;
-
   const activeFilters = hasActiveFilters(appliedFilters);
+
+  const bucketSecs = bucketSecondsFor(rangeSeconds);
+
+  // Expandable row for top talker tables
+  const expandable = {
+    expandedRowRender: (record: NetflowTopTalker) => (
+      <IpHistoryChart
+        ip={record.ip}
+        epochBegin={epochRange.begin}
+        epochEnd={epochRange.end}
+        bucketSeconds={bucketSecs}
+      />
+    ),
+    rowExpandable: () => epochRange.begin > 0,
+  };
 
   return (
     <main style={{
@@ -230,20 +545,9 @@ export function NetflowPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Select
-              size="small"
-              value={rangeSeconds}
-              onChange={setRangeSeconds}
-              options={RANGE_OPTIONS}
-              style={{ width: 150 }}
-            />
-            <Button
-              size="small"
-              icon={<RefreshCw size={12} />}
-              onClick={refresh}
-              loading={loading}
-              style={{ background: '#0a0f1e', borderColor: '#1e3a5f', color: '#94a3b8' }}
-            >
+            <Select size="small" value={rangeSeconds} onChange={setRangeSeconds} options={RANGE_OPTIONS} style={{ width: 150 }} />
+            <Button size="small" icon={<RefreshCw size={12} />} onClick={refresh} loading={loading}
+              style={{ background: '#0a0f1e', borderColor: '#1e3a5f', color: '#94a3b8' }}>
               Atualizar
             </Button>
           </div>
@@ -252,78 +556,29 @@ export function NetflowPage() {
         {/* ─── Filter bar ─────────────────────────────────────────────────── */}
         <div className="flex items-center gap-2 mt-3 flex-wrap">
           <Filter size={12} style={{ color: '#475569', flexShrink: 0 }} />
-
-          <Select
-            size="small"
-            allowClear
-            placeholder="Protocolo"
-            style={{ width: 110 }}
-            value={draftFilters.protocol}
-            onChange={v => handleSelectFilter('protocol', v)}
-            options={PROTOCOL_OPTIONS}
-          />
-
-          <Select
-            size="small"
-            allowClear
-            placeholder="Versão IP"
-            style={{ width: 95 }}
+          <Select size="small" allowClear placeholder="Protocolo" style={{ width: 110 }}
+            value={draftFilters.protocol} onChange={v => handleSelectFilter('protocol', v)} options={PROTOCOL_OPTIONS} />
+          <Select size="small" allowClear placeholder="Versão IP" style={{ width: 95 }}
             value={draftFilters.ip_version}
             onChange={v => handleSelectFilter('ip_version', v as '4' | '6' | undefined)}
-            options={[{ label: 'IPv4', value: '4' }, { label: 'IPv6', value: '6' }]}
-          />
-
-          <Input
-            size="small"
-            placeholder="ASN (ex: 1234)"
-            style={{ width: 130, background: '#0a0f1e', borderColor: '#1e3a5f', color: '#e2e8f0' }}
-            value={draftFilters.asn ?? ''}
-            onChange={e => setDraftFilters(f => ({ ...f, asn: e.target.value }))}
-            onPressEnter={applyFilters}
-          />
-
-          <Input
-            size="small"
-            placeholder="IP Origem"
-            style={{ width: 140, background: '#0a0f1e', borderColor: '#1e3a5f', color: '#e2e8f0' }}
-            value={draftFilters.src_ip ?? ''}
-            onChange={e => setDraftFilters(f => ({ ...f, src_ip: e.target.value }))}
-            onPressEnter={applyFilters}
-          />
-
-          <Input
-            size="small"
-            placeholder="IP Destino"
-            style={{ width: 140, background: '#0a0f1e', borderColor: '#1e3a5f', color: '#e2e8f0' }}
-            value={draftFilters.dst_ip ?? ''}
-            onChange={e => setDraftFilters(f => ({ ...f, dst_ip: e.target.value }))}
-            onPressEnter={applyFilters}
-          />
-
-          <Button
-            size="small"
-            onClick={applyFilters}
-            style={{ background: '#00c8f0', borderColor: '#00c8f0', color: '#000', fontWeight: 600 }}
-          >
+            options={[{ label: 'IPv4', value: '4' }, { label: 'IPv6', value: '6' }]} />
+          <Input size="small" placeholder="ASN (ex: 1234)" style={{ width: 130, background: '#0a0f1e', borderColor: '#1e3a5f', color: '#e2e8f0' }}
+            value={draftFilters.asn ?? ''} onChange={e => setDraftFilters(f => ({ ...f, asn: e.target.value }))} onPressEnter={applyFilters} />
+          <Input size="small" placeholder="IP Origem" style={{ width: 140, background: '#0a0f1e', borderColor: '#1e3a5f', color: '#e2e8f0' }}
+            value={draftFilters.src_ip ?? ''} onChange={e => setDraftFilters(f => ({ ...f, src_ip: e.target.value }))} onPressEnter={applyFilters} />
+          <Input size="small" placeholder="IP Destino" style={{ width: 140, background: '#0a0f1e', borderColor: '#1e3a5f', color: '#e2e8f0' }}
+            value={draftFilters.dst_ip ?? ''} onChange={e => setDraftFilters(f => ({ ...f, dst_ip: e.target.value }))} onPressEnter={applyFilters} />
+          <Button size="small" onClick={applyFilters}
+            style={{ background: '#00c8f0', borderColor: '#00c8f0', color: '#000', fontWeight: 600 }}>
             Aplicar
           </Button>
-
           {activeFilters && (
-            <Button
-              size="small"
-              icon={<X size={11} />}
-              onClick={clearFilters}
-              style={{ background: 'transparent', borderColor: '#334155', color: '#94a3b8' }}
-            >
+            <Button size="small" icon={<X size={11} />} onClick={clearFilters}
+              style={{ background: 'transparent', borderColor: '#334155', color: '#94a3b8' }}>
               Limpar
             </Button>
           )}
-
-          {activeFilters && (
-            <span style={{ fontSize: 11, color: '#f59e0b' }}>
-              Filtros ativos
-            </span>
-          )}
+          {activeFilters && <span style={{ fontSize: 11, color: '#f59e0b' }}>Filtros ativos</span>}
         </div>
 
         {error && (
@@ -343,27 +598,39 @@ export function NetflowPage() {
       {/* ─── KPI cards ───────────────────────────────────────────────────── */}
       <NetflowKpiCards summary={summary} loading={loading} />
 
-      {/* ─── Timeseries chart ────────────────────────────────────────────── */}
+      {/* ─── Timeseries chart (com toggle de métrica) ────────────────────── */}
       <NetflowTimeseriesChart
         data={timeseries}
         loading={loading}
-        bucketSeconds={bucketSecondsFor(rangeSeconds)}
+        bucketSeconds={bucketSecs}
+        metric={chartMetric}
+        onMetricChange={setChartMetric}
       />
+
+      {/* ─── Evolução por protocolo + ASN ────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+        <ProtocolEvolutionChart data={protoTs} bucketSeconds={bucketSecs} loading={loading} />
+        <AsnEvolutionChart data={asnTs} bucketSeconds={bucketSecs} loading={loading} />
+      </div>
 
       {/* ─── Top Talkers / Portas / Protocolos / ASN ─────────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-        <Card title={<span style={{ color: '#94a3b8' }}>Top Origens (Clientes)</span>}
+        <Card title={<span style={{ color: '#94a3b8' }}>Top Origens — clique ▶ para histórico</span>}
           style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 8 } }}>
           <Table<NetflowTopTalker>
             size="small" rowKey="ip" loading={loading} pagination={false}
-            dataSource={topTalkersSrc} columns={topTalkerColumns} locale={{ emptyText: 'Sem dados' }} />
+            dataSource={topTalkersSrc} columns={topTalkerColumns}
+            expandable={expandable}
+            locale={{ emptyText: 'Sem dados' }} />
         </Card>
 
-        <Card title={<span style={{ color: '#94a3b8' }}>Top Destinos</span>}
+        <Card title={<span style={{ color: '#94a3b8' }}>Top Destinos — clique ▶ para histórico</span>}
           style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 8 } }}>
           <Table<NetflowTopTalker>
             size="small" rowKey="ip" loading={loading} pagination={false}
-            dataSource={topTalkersDst} columns={topTalkerColumns} locale={{ emptyText: 'Sem dados' }} />
+            dataSource={topTalkersDst} columns={topTalkerColumns}
+            expandable={expandable}
+            locale={{ emptyText: 'Sem dados' }} />
         </Card>
 
         <Card title={<span style={{ color: '#94a3b8' }}>Top Portas de Destino</span>}
@@ -409,135 +676,6 @@ export function NetflowPage() {
           dataSource={incidents} columns={incidentColumns} locale={{ emptyText: 'Nenhum incidente no período' }} />
       </Card>
     </main>
-  );
-}
-
-// ─── Protocols with percentage bars ───────────────────────────────────────────
-
-function ProtocolsWithBar({ data, loading }: { data: NetflowProtocol[]; loading: boolean }) {
-  const total = data.reduce((s, r) => s + (r.total_bytes ?? 0), 0);
-  return (
-    <Table<NetflowProtocol>
-      size="small" rowKey="protocol" loading={loading} pagination={false}
-      dataSource={data} locale={{ emptyText: 'Sem dados' }}
-      columns={[
-        ...protocolColumns,
-        {
-          title: '%',
-          dataIndex: 'total_bytes',
-          width: 100,
-          render: (v: number) => {
-            const pct = total > 0 ? (v / total) * 100 : 0;
-            return (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <div style={{ flex: 1, height: 6, background: '#1e2d4a', borderRadius: 3 }}>
-                  <div style={{ width: `${pct.toFixed(1)}%`, height: '100%', background: '#00c8f0', borderRadius: 3 }} />
-                </div>
-                <span style={{ fontSize: 10, color: '#64748b', width: 34, textAlign: 'right' }}>
-                  {pct.toFixed(1)}%
-                </span>
-              </div>
-            );
-          },
-        },
-      ]}
-    />
-  );
-}
-
-// ─── Timeseries chart ─────────────────────────────────────────────────────────
-
-interface TimeseriesChartProps {
-  data: NetflowTimeseriesPoint[];
-  loading: boolean;
-  bucketSeconds: number;
-}
-
-function NetflowTimeseriesChart({ data, loading, bucketSeconds }: TimeseriesChartProps) {
-  if (!data.length) {
-    return (
-      <Card title={<span style={{ color: '#94a3b8' }}>Histórico e Evolução de Tráfego</span>}
-        style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 12 } }}>
-        <p className="text-xs text-center py-12" style={{ color: '#475569' }}>
-          {loading ? 'Carregando série temporal…' : 'Sem dados para o período selecionado.'}
-        </p>
-      </Card>
-    );
-  }
-
-  const labels     = data.map(p => dayjs.unix(p.bucket).format('DD/MM HH:mm'));
-  const mbpsSeries = data.map(p => Number(((p.total_bytes ?? 0) * 8 / bucketSeconds / 1_000_000).toFixed(3)));
-  const pktSeries  = data.map(p => p.total_packets ?? 0);
-  const warnSeries = data.map(p => p.warning ?? 0);
-  const critSeries = data.map(p => p.critical ?? 0);
-
-  const peakMbps = Math.max(...mbpsSeries, 0);
-  const avgMbps  = mbpsSeries.reduce((s, v) => s + v, 0) / (mbpsSeries.length || 1);
-
-  const options: ApexOptions = {
-    chart: {
-      id: 'netflow-ts', background: 'transparent',
-      toolbar: { show: true, tools: { zoom: true, zoomin: true, zoomout: true, pan: true, reset: true, download: false } },
-      animations: { enabled: false }, zoom: { enabled: true },
-    },
-    colors: ['#00c8f0', '#8b5cf6', '#f59e0b', '#ff3b3b'],
-    fill: {
-      type: ['gradient', 'solid', 'solid', 'solid'],
-      gradient: { shadeIntensity: 1, opacityFrom: 0.35, opacityTo: 0.02, stops: [0, 95, 100] },
-    },
-    stroke: { curve: 'smooth', width: [2, 0, 0, 0] },
-    plotOptions: { bar: { columnWidth: '60%' } },
-    annotations: {
-      yaxis: [
-        { y: avgMbps, borderColor: '#f59e0b', borderWidth: 1, strokeDashArray: 4,
-          label: { text: `Média ${avgMbps.toFixed(2)} Mbps`, style: { color: '#f59e0b', background: '#0a0f1e', fontSize: '10px' } } },
-      ],
-    },
-    grid: { borderColor: '#1e2d4a', strokeDashArray: 4, xaxis: { lines: { show: false } } },
-    xaxis: {
-      categories: labels,
-      labels: { style: { colors: '#475569', fontSize: '10px', fontFamily: 'monospace' }, rotate: 0 },
-      axisBorder: { show: false }, axisTicks: { show: false },
-      tickAmount: Math.min(10, labels.length),
-    },
-    yaxis: [
-      { seriesName: 'Banda (Mbps)',
-        labels: { style: { colors: '#475569', fontSize: '11px', fontFamily: 'monospace' }, formatter: v => `${v.toFixed(1)} Mbps` } },
-      { seriesName: 'Pacotes', opposite: true,
-        labels: { style: { colors: '#475569', fontSize: '11px', fontFamily: 'monospace' }, formatter: v => v.toFixed(0) } },
-      { seriesName: 'Avisos', show: false },
-      { seriesName: 'Críticos', show: false },
-    ],
-    tooltip: { theme: 'dark', x: { show: true } },
-    legend: { labels: { colors: '#94a3b8' }, fontSize: '12px' },
-    dataLabels: { enabled: false },
-  };
-
-  return (
-    <Card
-      title={
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ color: '#94a3b8' }}>Histórico e Evolução de Tráfego</span>
-          <div style={{ display: 'flex', gap: 16, fontSize: 11 }}>
-            <span style={{ color: '#8b5cf6' }}>Pico: <strong>{fmtMbps(peakMbps)}</strong></span>
-            <span style={{ color: '#f59e0b' }}>Média: <strong>{fmtMbps(avgMbps)}</strong></span>
-          </div>
-        </div>
-      }
-      style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 12 } }}>
-      <Chart
-        key={`ts-${data.length}`}
-        options={options}
-        series={[
-          { name: 'Banda (Mbps)', type: 'area',   data: mbpsSeries },
-          { name: 'Pacotes',      type: 'column', data: pktSeries  },
-          { name: 'Avisos',       type: 'column', data: warnSeries },
-          { name: 'Críticos',     type: 'column', data: critSeries },
-        ]}
-        type="line"
-        height={290}
-      />
-    </Card>
   );
 }
 

@@ -307,6 +307,52 @@ export async function getNetflowIncidents(
   return apiFetch(`/netflow/incidents${buildQS(params)}`);
 }
 
+export interface NetflowIpTimeseriesPoint {
+  bucket: number;
+  total_bytes: number;
+  total_packets: number;
+  flows: number;
+}
+
+export async function getNetflowIpTimeseries(params: {
+  ip: string;
+  epoch_begin?: number;
+  epoch_end?: number;
+  bucket_seconds?: number;
+  direction?: 'src' | 'dst' | 'both';
+}): Promise<{ records: NetflowIpTimeseriesPoint[] }> {
+  return apiFetch(`/netflow/ip-timeseries${buildQS(params)}`);
+}
+
+export interface NetflowProtoTimeseriesResult {
+  protocols: string[];
+  series: Array<Record<string, number>>;  // { bucket: number, [proto]: number }
+}
+
+export async function getNetflowProtocolTimeseries(params: {
+  epoch_begin?: number;
+  epoch_end?: number;
+  bucket_seconds?: number;
+  top_n?: number;
+}): Promise<NetflowProtoTimeseriesResult> {
+  return apiFetch(`/netflow/protocol-timeseries${buildQS(params)}`);
+}
+
+export interface NetflowAsnTimeseriesResult {
+  asns: number[];
+  series: Array<Record<string, number>>;  // { bucket: number, [asn]: number }
+}
+
+export async function getNetflowAsnTimeseries(params: {
+  epoch_begin?: number;
+  epoch_end?: number;
+  bucket_seconds?: number;
+  asn_type?: 'src' | 'dst';
+  top_n?: number;
+}): Promise<NetflowAsnTimeseriesResult> {
+  return apiFetch(`/netflow/asn-timeseries${buildQS(params)}`);
+}
+
 // ─── Correlation ──────────────────────────────────────────────────────────────
 
 export interface AttackProtocol {
