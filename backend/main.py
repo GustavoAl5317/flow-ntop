@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from auth import authenticate_user, create_access_token, get_current_user
 from database import (
+    asn_detail,
     build_summary,
     correlated_attacks,
     delete_interface,
@@ -44,6 +45,7 @@ from database import (
     netflow_top_ports,
     netflow_top_talkers,
     query_events,
+    resolve_ips_to_blocks,
     save_report,
     upsert_alert_status,
     upsert_interface,
@@ -650,6 +652,26 @@ def get_interface_detail(
     if detail is None:
         raise HTTPException(status_code=404, detail="Interface não encontrada")
     return detail
+
+
+@app.get("/api/asn/{asn}/detail")
+def get_asn_detail(
+    asn: int,
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    bucket_seconds: int = Query(default=300, ge=10, le=86400),
+    user: dict = Depends(get_current_user),
+) -> dict:
+    return asn_detail(asn, epoch_begin, epoch_end, bucket_seconds)
+
+
+@app.get("/api/ip-blocks/resolve")
+def resolve_ips(
+    ips: str,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    ip_list = [ip.strip() for ip in ips.split(",") if ip.strip()]
+    return {"resolved": resolve_ips_to_blocks(ip_list)}
 
 
 @app.get("/api/health")

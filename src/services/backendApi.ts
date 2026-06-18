@@ -433,6 +433,17 @@ export interface IpBlockTimeseriesPoint {
   out_flows: number;
 }
 
+export interface IpBlockActiveInterface {
+  id: number;
+  name: string;
+  ifid: number;
+  link_type: string | null;
+  router_ip: string;
+  in_bytes: number;
+  out_bytes: number;
+  flows: number;
+}
+
 export interface IpBlockDetail {
   block: IpBlock;
   summary: {
@@ -449,6 +460,7 @@ export interface IpBlockDetail {
   top_ports: Array<{ port: number; protocol: string; bytes: number; flows: number }>;
   top_src: Array<{ ip: string; bytes: number; flows: number }>;
   top_dst: Array<{ ip: string; bytes: number; flows: number }>;
+  active_interfaces: IpBlockActiveInterface[];
 }
 
 export async function getIpBlocks(): Promise<{ blocks: IpBlock[] }> {
@@ -540,6 +552,14 @@ export interface InterfaceTimeseriesPoint {
   out_flows: number;
 }
 
+export interface InterfaceActiveBlock {
+  id: number;
+  cidr: string;
+  label: string;
+  type: string | null;
+  ip_count: number;
+}
+
 export interface InterfaceDetail {
   iface: NetInterface;
   summary: {
@@ -557,6 +577,58 @@ export interface InterfaceDetail {
   top_ports: Array<{ port: number; protocol: string; bytes: number; flows: number }>;
   top_src: Array<{ ip: string; bytes: number; flows: number }>;
   top_dst: Array<{ ip: string; bytes: number; flows: number }>;
+  active_blocks: InterfaceActiveBlock[];
+}
+
+export interface AsnTopInterface {
+  id: number;
+  name: string;
+  ifid: number;
+  link_type: string | null;
+  router_ip: string;
+  bytes: number;
+  flows: number;
+}
+
+export interface AsnTouchedBlock {
+  id: number;
+  cidr: string;
+  label: string;
+  type: string | null;
+  ip_count: number;
+}
+
+export interface AsnDetail {
+  asn: number;
+  summary: {
+    total_bytes: number;
+    in_bytes: number;
+    out_bytes: number;
+    total_flows: number;
+    peak_mbps: number;
+    avg_mbps: number;
+  };
+  timeseries: Array<{ bucket: number; in_bytes: number; out_bytes: number; flows: number }>;
+  top_src: Array<{ ip: string; bytes: number; flows: number }>;
+  top_dst: Array<{ ip: string; bytes: number; flows: number }>;
+  top_protocols: Array<{ protocol: string; bytes: number; flows: number }>;
+  top_interfaces: AsnTopInterface[];
+  touched_blocks: AsnTouchedBlock[];
+}
+
+export async function getAsnDetail(asn: number, params: {
+  epoch_begin?: number;
+  epoch_end?: number;
+  bucket_seconds?: number;
+} = {}): Promise<AsnDetail> {
+  return apiFetch(`/asn/${asn}/detail${buildQS(params)}`);
+}
+
+export async function resolveIpsToBlocks(ips: string[]): Promise<{
+  resolved: Record<string, { id: number; cidr: string; label: string; type: string | null }>;
+}> {
+  if (ips.length === 0) return { resolved: {} };
+  return apiFetch(`/ip-blocks/resolve?ips=${encodeURIComponent(ips.join(','))}`);
 }
 
 export interface DiscoveredInterface {

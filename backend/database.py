@@ -1057,6 +1057,20 @@ def ip_block_detail(
             ep,
         ).fetchall()
 
+        # Interfaces carrying this block's traffic (cross-join with small interfaces table)
+        iface_rows = conn.execute(
+            f"""SELECT i.id, i.name, i.ifid, i.link_type, i.router_ip,
+                       COALESCE(SUM(CASE WHEN {in_cond}  THEN e.bytes ELSE 0 END), 0) AS in_bytes,
+                       COALESCE(SUM(CASE WHEN {out_cond} THEN e.bytes ELSE 0 END), 0) AS out_bytes,
+                       COUNT(*) AS flows
+                FROM events e, interfaces i
+                WHERE {ew} AND {block_cond}
+                  AND (e.in_if = i.ifid OR e.out_if = i.ifid)
+                  AND (i.router_ip = '' OR e.sampler = i.router_ip)
+                GROUP BY i.id ORDER BY (in_bytes + out_bytes) DESC LIMIT 10""",
+            ep,
+        ).fetchall()
+
     total_bytes = summ["total_bytes"] or 0
     ts_list = [dict(r) for r in ts_rows]
     bucket_bytes = [r["in_bytes"] + r["out_bytes"] for r in ts_list]
@@ -1076,12 +1090,13 @@ def ip_block_detail(
             "peak_mbps":   to_mbps(peak_bytes),
             "avg_mbps":    to_mbps(avg_bytes),
         },
-        "timeseries":   ts_list,
-        "top_asns":     [dict(r) for r in asn_rows],
-        "top_protocols":[dict(r) for r in proto_rows],
-        "top_ports":    [dict(r) for r in port_rows],
-        "top_src":      [dict(r) for r in src_rows],
-        "top_dst":      [dict(r) for r in dst_rows],
+        "timeseries":        ts_list,
+        "top_asns":          [dict(r) for r in asn_rows],
+        "top_protocols":     [dict(r) for r in proto_rows],
+        "top_ports":         [dict(r) for r in port_rows],
+        "top_src":           [dict(r) for r in src_rows],
+        "top_dst":           [dict(r) for r in dst_rows],
+        "active_interfaces": [dict(r) for r in iface_rows],
     }
 
 
@@ -1337,6 +1352,25 @@ def interface_detail(
             ep,
         ).fetchall()
 
+        # Load all blocks for Python-side IP → block lookup
+        all_blocks = conn.execute("SELECT * FROM ip_blocks ORDER BY label").fetchall()
+
+    # Match top src/dst IPs against registered blocks (fast: O(20 IPs × n_blocks))
+    seen_ips = {r["ip"] for r in src_rows} | {r["ip"] for r in dst_rows}
+    block_hits: dict[int, dict] = {}
+    for ip in seen_ips:
+        ip_int = _ip_to_int(ip)
+        if ip_int is None:
+            continue
+        for b in all_blocks:
+            if b["network_int"] <= ip_int <= b["broadcast_int"]:
+                bid = b["id"]
+                if bid not in block_hits:
+                    block_hits[bid] = {**dict(b), "ip_count": 0}
+                block_hits[bid]["ip_count"] += 1
+                break
+    active_blocks = sorted(block_hits.values(), key=lambda x: x["ip_count"], reverse=True)
+
     ts_list = [dict(r) for r in ts_rows]
     bucket_bytes = [r["in_bytes"] + r["out_bytes"] for r in ts_list]
     peak_bytes = max(bucket_bytes) if bucket_bytes else 0
@@ -1367,6 +1401,7 @@ def interface_detail(
         "top_ports":     [dict(r) for r in port_rows],
         "top_src":       [dict(r) for r in src_rows],
         "top_dst":       [dict(r) for r in dst_rows],
+        "active_blocks": active_blocks,
     }
 
 
@@ -1586,6 +1621,140 @@ def correlated_attacks(
             results.append(r)
 
     return results
+
+
+def asn_detail(
+    asn: int,
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    bucket_seconds: int = 300,
+) -> dict:
+    """Dashboard de um ASN: timeseries IN/OUT, top IPs, protocolos, interfaces e blocos tocados."""
+    ep: list = []
+    ec = ["source = 'goflow2'"]
+    if epoch_begin is not None:
+        ec.append("tstamp >= ?"); ep.append(epoch_begin)
+    if epoch_end is not None:
+        ec.append("tstamp <= ?"); ep.append(epoch_end)
+    ew = " AND ".join(ec)
+    asn_cond = f"(src_as = {asn} OR dst_as = {asn})"
+
+    with get_db() as conn:
+        summ = conn.execute(
+            f"""SELECT COALESCE(SUM(bytes), 0) AS total_bytes,
+                       COALESCE(SUM(CASE WHEN dst_as = {asn} THEN bytes ELSE 0 END), 0) AS in_bytes,
+                       COALESCE(SUM(CASE WHEN src_as = {asn} THEN bytes ELSE 0 END), 0) AS out_bytes,
+                       COUNT(*) AS total_flows
+                FROM events WHERE {ew} AND {asn_cond}""",
+            ep,
+        ).fetchone()
+
+        ts_rows = conn.execute(
+            f"""SELECT (tstamp / ?) * ? AS bucket,
+                       COALESCE(SUM(CASE WHEN dst_as = {asn} THEN bytes ELSE 0 END), 0) AS in_bytes,
+                       COALESCE(SUM(CASE WHEN src_as = {asn} THEN bytes ELSE 0 END), 0) AS out_bytes,
+                       COUNT(*) AS flows
+                FROM events WHERE {ew} AND {asn_cond}
+                GROUP BY bucket ORDER BY bucket ASC""",
+            [bucket_seconds, bucket_seconds, *ep],
+        ).fetchall()
+
+        # IPs pertencentes a este ASN (src_as = asn)
+        src_rows = conn.execute(
+            f"""SELECT src_ip AS ip, SUM(bytes) AS bytes, COUNT(*) AS flows
+                FROM events WHERE {ew} AND src_as = {asn} AND src_ip IS NOT NULL
+                GROUP BY src_ip ORDER BY bytes DESC LIMIT 10""",
+            ep,
+        ).fetchall()
+
+        # IPs externos que se comunicam com este ASN (dst_as = asn)
+        dst_rows = conn.execute(
+            f"""SELECT dst_ip AS ip, SUM(bytes) AS bytes, COUNT(*) AS flows
+                FROM events WHERE {ew} AND dst_as = {asn} AND dst_ip IS NOT NULL
+                GROUP BY dst_ip ORDER BY bytes DESC LIMIT 10""",
+            ep,
+        ).fetchall()
+
+        proto_rows = conn.execute(
+            f"""SELECT protocol, SUM(bytes) AS bytes, COUNT(*) AS flows
+                FROM events WHERE {ew} AND {asn_cond} AND protocol IS NOT NULL
+                GROUP BY protocol ORDER BY bytes DESC LIMIT 10""",
+            ep,
+        ).fetchall()
+
+        # Interfaces registradas que transportam tráfego deste ASN
+        iface_rows = conn.execute(
+            f"""SELECT i.id, i.name, i.ifid, i.link_type, i.router_ip,
+                       SUM(e.bytes) AS bytes, COUNT(*) AS flows
+                FROM events e, interfaces i
+                WHERE {ew} AND {asn_cond}
+                  AND (e.in_if = i.ifid OR e.out_if = i.ifid)
+                  AND (i.router_ip = '' OR e.sampler = i.router_ip)
+                GROUP BY i.id ORDER BY bytes DESC LIMIT 10""",
+            ep,
+        ).fetchall()
+
+        all_blocks = conn.execute("SELECT * FROM ip_blocks ORDER BY label").fetchall()
+
+    # Blocos IP tocados: match top IPs do ASN contra CIDRs cadastrados
+    asn_ips = {r["ip"] for r in src_rows} | {r["ip"] for r in dst_rows}
+    block_hits: dict[int, dict] = {}
+    for ip in asn_ips:
+        ip_int = _ip_to_int(ip)
+        if ip_int is None:
+            continue
+        for b in all_blocks:
+            if b["network_int"] <= ip_int <= b["broadcast_int"]:
+                bid = b["id"]
+                if bid not in block_hits:
+                    block_hits[bid] = {**dict(b), "ip_count": 0}
+                block_hits[bid]["ip_count"] += 1
+                break
+    touched_blocks = sorted(block_hits.values(), key=lambda x: x["ip_count"], reverse=True)
+
+    ts_list = [dict(r) for r in ts_rows]
+    bucket_bytes = [(r["in_bytes"] or 0) + (r["out_bytes"] or 0) for r in ts_list]
+    peak_bytes = max(bucket_bytes) if bucket_bytes else 0
+    avg_bytes = sum(bucket_bytes) / len(bucket_bytes) if bucket_bytes else 0
+
+    def to_mbps(b: float) -> float:
+        return round(b * 8 / max(bucket_seconds, 1) / 1_000_000, 3)
+
+    return {
+        "asn": asn,
+        "summary": {
+            "total_bytes":  summ["total_bytes"]  or 0,
+            "in_bytes":     summ["in_bytes"]      or 0,
+            "out_bytes":    summ["out_bytes"]     or 0,
+            "total_flows":  summ["total_flows"]   or 0,
+            "peak_mbps":    to_mbps(peak_bytes),
+            "avg_mbps":     to_mbps(avg_bytes),
+        },
+        "timeseries":      ts_list,
+        "top_src":         [dict(r) for r in src_rows],
+        "top_dst":         [dict(r) for r in dst_rows],
+        "top_protocols":   [dict(r) for r in proto_rows],
+        "top_interfaces":  [dict(r) for r in iface_rows],
+        "touched_blocks":  touched_blocks,
+    }
+
+
+def resolve_ips_to_blocks(ips: list[str]) -> dict[str, dict]:
+    """Para cada IP, retorna o bloco IP cadastrado que o contém (primeiro match)."""
+    if not ips:
+        return {}
+    with get_db() as conn:
+        blocks = conn.execute("SELECT * FROM ip_blocks ORDER BY network_int").fetchall()
+    result: dict[str, dict] = {}
+    for ip in ips:
+        ip_int = _ip_to_int(ip)
+        if ip_int is None:
+            continue
+        for b in blocks:
+            if b["network_int"] <= ip_int <= b["broadcast_int"]:
+                result[ip] = {"id": b["id"], "cidr": b["cidr"], "label": b["label"], "type": b["type"]}
+                break
+    return result
 
 
 def get_alert_statuses(keys: list[str]) -> list[dict]:

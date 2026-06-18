@@ -5,6 +5,7 @@ import Chart from 'react-apexcharts';
 import type { ApexOptions } from 'apexcharts';
 import dayjs from 'dayjs';
 import { Network, RefreshCw, Filter, X } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import {
   getNetflowSummary,
   getNetflowTopTalkers,
@@ -17,6 +18,7 @@ import {
   getNetflowIpTimeseries,
   getNetflowProtocolTimeseries,
   getNetflowAsnTimeseries,
+  resolveIpsToBlocks,
   type NetflowSummary,
   type NetflowTopTalker,
   type NetflowTopPort,
@@ -431,9 +433,12 @@ export function NetflowPage() {
   const appliedRef = useRef(appliedFilters);
   appliedRef.current = appliedFilters;
 
+  const navigate = useNavigate();
+
   const [summary, setSummary]             = useState<NetflowSummary | null>(null);
   const [topTalkersSrc, setTopTalkersSrc] = useState<NetflowTopTalker[]>([]);
   const [topTalkersDst, setTopTalkersDst] = useState<NetflowTopTalker[]>([]);
+  const [ipBlockMap, setIpBlockMap]       = useState<Record<string, { id: number; cidr: string; label: string; type: string | null }>>({});
   const [topPorts, setTopPorts]           = useState<NetflowTopPort[]>([]);
   const [topAsnSrc, setTopAsnSrc]         = useState<NetflowTopAsn[]>([]);
   const [topAsnDst, setTopAsnDst]         = useState<NetflowTopAsn[]>([]);
@@ -475,8 +480,14 @@ export function NetflowPage() {
 
     const [r0,r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11] = results;
     if (r0.status === 'fulfilled')  setSummary(r0.value);                else setSummary(null);
-    if (r1.status === 'fulfilled')  setTopTalkersSrc(r1.value.records); else setTopTalkersSrc([]);
-    if (r2.status === 'fulfilled')  setTopTalkersDst(r2.value.records); else setTopTalkersDst([]);
+    const srcRecords = r1.status === 'fulfilled' ? r1.value.records : [];
+    const dstRecords = r2.status === 'fulfilled' ? r2.value.records : [];
+    setTopTalkersSrc(srcRecords);
+    setTopTalkersDst(dstRecords);
+
+    // Resolve IPs → blocos IP cadastrados (best-effort, non-blocking)
+    const allIps = [...new Set([...srcRecords.map((r: NetflowTopTalker) => r.ip), ...dstRecords.map((r: NetflowTopTalker) => r.ip)])];
+    resolveIpsToBlocks(allIps).then(res => setIpBlockMap(res.resolved)).catch(() => {});
     if (r3.status === 'fulfilled')  setTopPorts(r3.value.records);       else setTopPorts([]);
     if (r4.status === 'fulfilled')  setTopAsnSrc(r4.value.records);      else setTopAsnSrc([]);
     if (r5.status === 'fulfilled')  setTopAsnDst(r5.value.records);      else setTopAsnDst([]);
@@ -511,6 +522,10 @@ export function NetflowPage() {
   const activeFilters = hasActiveFilters(appliedFilters);
 
   const bucketSecs = bucketSecondsFor(rangeSeconds);
+
+  // Column definitions (depend on runtime state/navigate)
+  const talkerCols = makeTopTalkerColumns(ipBlockMap, navigate);
+  const asnCols    = makeAsnColumns(navigate);
 
   // Expandable row for top talker tables
   const expandable = {
@@ -619,7 +634,7 @@ export function NetflowPage() {
           style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 8 } }}>
           <Table<NetflowTopTalker>
             size="small" rowKey="ip" loading={loading} pagination={false}
-            dataSource={topTalkersSrc} columns={topTalkerColumns}
+            dataSource={topTalkersSrc} columns={talkerCols}
             expandable={expandable}
             locale={{ emptyText: 'Sem dados' }} />
         </Card>
@@ -628,7 +643,7 @@ export function NetflowPage() {
           style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 8 } }}>
           <Table<NetflowTopTalker>
             size="small" rowKey="ip" loading={loading} pagination={false}
-            dataSource={topTalkersDst} columns={topTalkerColumns}
+            dataSource={topTalkersDst} columns={talkerCols}
             expandable={expandable}
             locale={{ emptyText: 'Sem dados' }} />
         </Card>
@@ -649,14 +664,14 @@ export function NetflowPage() {
           style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 8 } }}>
           <Table<NetflowTopAsn>
             size="small" rowKey="asn" loading={loading} pagination={false}
-            dataSource={topAsnSrc} columns={asnColumns} locale={{ emptyText: 'Sem dados' }} />
+            dataSource={topAsnSrc} columns={asnCols} locale={{ emptyText: 'Sem dados' }} />
         </Card>
 
         <Card title={<span style={{ color: '#94a3b8' }}>Top ASN Destino</span>}
           style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 8 } }}>
           <Table<NetflowTopAsn>
             size="small" rowKey="asn" loading={loading} pagination={false}
-            dataSource={topAsnDst} columns={asnColumns} locale={{ emptyText: 'Sem dados' }} />
+            dataSource={topAsnDst} columns={asnCols} locale={{ emptyText: 'Sem dados' }} />
         </Card>
       </div>
 
@@ -681,16 +696,37 @@ export function NetflowPage() {
 
 // ─── Table column definitions ─────────────────────────────────────────────────
 
-const topTalkerColumns: ColumnsType<NetflowTopTalker> = [
-  { title: 'IP', dataIndex: 'ip',
-    render: v => <span style={{ fontFamily: 'monospace', color: '#00c8f0' }}>{v}</span> },
-  { title: 'Volume', dataIndex: 'total_bytes',
-    sorter: (a, b) => a.total_bytes - b.total_bytes, defaultSortOrder: 'descend',
-    render: v => formatBytes(v) },
-  { title: 'Pacotes', dataIndex: 'total_packets',
-    render: v => (v ?? 0).toLocaleString('pt-BR') },
-  { title: 'Fluxos', dataIndex: 'flows' },
-];
+function makeTopTalkerColumns(
+  ipBlockMap: Record<string, { id: number; cidr: string; label: string; type: string | null }>,
+  navigate: (path: string) => void,
+): ColumnsType<NetflowTopTalker> {
+  return [
+    {
+      title: 'IP / Bloco', dataIndex: 'ip',
+      render: (v: string) => {
+        const block = ipBlockMap[v];
+        return (
+          <div>
+            <span style={{ fontFamily: 'monospace', color: '#00c8f0' }}>{v}</span>
+            {block && (
+              <Tag color="blue"
+                style={{ fontSize: 10, marginLeft: 6, cursor: 'pointer' }}
+                onClick={e => { e.stopPropagation(); navigate(`/ip-blocks/${block.id}`); }}>
+                {block.cidr}
+              </Tag>
+            )}
+          </div>
+        );
+      },
+    },
+    { title: 'Volume', dataIndex: 'total_bytes',
+      sorter: (a, b) => a.total_bytes - b.total_bytes, defaultSortOrder: 'descend',
+      render: v => formatBytes(v) },
+    { title: 'Pacotes', dataIndex: 'total_packets',
+      render: v => (v ?? 0).toLocaleString('pt-BR') },
+    { title: 'Fluxos', dataIndex: 'flows' },
+  ];
+}
 
 const topPortColumns: ColumnsType<NetflowTopPort> = [
   { title: 'Porta', dataIndex: 'port',
@@ -715,16 +751,21 @@ const protocolColumns: ColumnsType<NetflowProtocol> = [
   { title: 'Fluxos', dataIndex: 'flows' },
 ];
 
-const asnColumns: ColumnsType<NetflowTopAsn> = [
-  { title: 'ASN', dataIndex: 'asn',
-    render: v => <span style={{ fontFamily: 'monospace', color: '#8b5cf6' }}>AS{v}</span> },
-  { title: 'Volume', dataIndex: 'total_bytes',
-    sorter: (a, b) => a.total_bytes - b.total_bytes, defaultSortOrder: 'descend',
-    render: v => formatBytes(v) },
-  { title: 'Pacotes', dataIndex: 'total_packets',
-    render: v => (v ?? 0).toLocaleString('pt-BR') },
-  { title: 'Fluxos', dataIndex: 'flows' },
-];
+function makeAsnColumns(navigate: (path: string) => void): ColumnsType<NetflowTopAsn> {
+  return [
+    { title: 'ASN', dataIndex: 'asn',
+      render: v => (
+        <span style={{ fontFamily: 'monospace', color: '#8b5cf6', cursor: 'pointer' }}
+          onClick={() => navigate(`/asn/${v}`)}>AS{v}</span>
+      )},
+    { title: 'Volume', dataIndex: 'total_bytes',
+      sorter: (a, b) => a.total_bytes - b.total_bytes, defaultSortOrder: 'descend',
+      render: v => formatBytes(v) },
+    { title: 'Pacotes', dataIndex: 'total_packets',
+      render: v => (v ?? 0).toLocaleString('pt-BR') },
+    { title: 'Fluxos', dataIndex: 'flows' },
+  ];
+}
 
 const bandwidthColumns: ColumnsType<NetflowBandwidthClient> = [
   { title: 'IP Cliente', dataIndex: 'ip',

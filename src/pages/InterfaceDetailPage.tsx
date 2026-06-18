@@ -9,6 +9,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   getInterfaceDetail,
   type InterfaceDetail,
+  type InterfaceActiveBlock,
 } from '../services/backendApi';
 
 const { Title, Text } = Typography;
@@ -96,7 +97,7 @@ export function InterfaceDetailPage() {
     );
   }
 
-  const { iface, summary, timeseries, top_asns, top_protocols, top_ports, top_src, top_dst } = detail;
+  const { iface, summary, timeseries, top_asns, top_protocols, top_ports, top_src, top_dst, active_blocks } = detail;
   const bucketSecs = bucketFor(rangeSeconds);
 
   const labels  = timeseries.map(p => dayjs.unix(p.bucket).format('DD/MM HH:mm'));
@@ -144,8 +145,27 @@ export function InterfaceDetailPage() {
     },
   };
 
+  const blockCols: ColumnsType<InterfaceActiveBlock> = [
+    {
+      title: 'Bloco',
+      key: 'block',
+      render: (_, r) => (
+        <div style={{ cursor: 'pointer' }} onClick={() => navigate(`/ip-blocks/${r.id}`)}>
+          <Tag color="blue" style={{ fontFamily: 'monospace' }}>{r.cidr}</Tag>
+          {r.type && <Tag color="geekblue" style={{ fontSize: 10 }}>{r.type}</Tag>}
+          <Text style={{ display: 'block', color: '#94a3b8', fontSize: 12, marginTop: 2 }}>{r.label}</Text>
+        </div>
+      ),
+    },
+    { title: 'IPs vistos', dataIndex: 'ip_count', align: 'right',
+      render: v => <Text style={{ color: '#94a3b8' }}>{v} IP{v !== 1 ? 's' : ''}</Text> },
+  ];
+
   const asnCols: ColumnsType<{ asn: number; bytes: number; flows: number }> = [
-    { title: 'ASN', dataIndex: 'asn', render: v => <Tag color="purple" style={{ fontFamily: 'monospace' }}>AS{v}</Tag> },
+    { title: 'ASN', dataIndex: 'asn', render: v => (
+      <Tag color="purple" style={{ fontFamily: 'monospace', cursor: 'pointer' }}
+        onClick={() => navigate(`/asn/${v}`)}>AS{v}</Tag>
+    )},
     { title: 'Bytes', dataIndex: 'bytes', align: 'right', sorter: (a, b) => a.bytes - b.bytes, defaultSortOrder: 'descend',
       render: v => <Text style={{ color: '#00c8f0', fontFamily: 'monospace' }}>{formatBytes(v)}</Text> },
     { title: 'Fluxos', dataIndex: 'flows', align: 'right',
@@ -328,13 +348,26 @@ export function InterfaceDetailPage() {
 
       {/* Ports */}
       <Card title={<span style={{ color: '#94a3b8' }}>Top Portas de Destino (tráfego IN)</span>}
-        style={{ background: '#0a1628', border: '1px solid #1e2d4a', borderRadius: 8 }}
+        style={{ background: '#0a1628', border: '1px solid #1e2d4a', borderRadius: 8, marginBottom: 12 }}
         styles={{ body: { padding: 0 } }}>
         <Table columns={portCols} dataSource={top_ports} rowKey={r => `${r.port}-${r.protocol}`}
           pagination={false} size="small"
           locale={{ emptyText: <Text style={{ color: '#334155' }}>Sem dados</Text> }}
           style={{ background: 'transparent' }} />
       </Card>
+
+      {/* Blocos IP ativos nesta interface */}
+      {active_blocks && active_blocks.length > 0 && (
+        <Card title={<span style={{ color: '#94a3b8' }}>Blocos IP ativos nesta interface</span>}
+          style={{ background: '#0a1628', border: '1px solid #1e2d4a', borderRadius: 8 }}
+          styles={{ body: { padding: 0 } }}>
+          <Table columns={blockCols} dataSource={active_blocks} rowKey="id"
+            pagination={false} size="small"
+            onRow={r => ({ onClick: () => navigate(`/ip-blocks/${r.id}`), style: { cursor: 'pointer' } })}
+            locale={{ emptyText: <Text style={{ color: '#334155' }}>Nenhum bloco cadastrado com IPs nesta interface</Text> }}
+            style={{ background: 'transparent' }} />
+        </Card>
+      )}
     </main>
   );
 }
