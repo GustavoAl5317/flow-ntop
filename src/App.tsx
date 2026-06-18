@@ -12,7 +12,8 @@ import { HistoryPage }   from './pages/HistoryPage';
 import { ReportsPage }   from './pages/ReportsPage';
 import { DetectionPage } from './pages/DetectionPage';
 import { NetflowPage }    from './pages/NetflowPage';
-import { IPBlocksPage }    from './pages/IPBlocksPage';
+import { IPBlocksPage }       from './pages/IPBlocksPage';
+import { IPBlockDetailPage }  from './pages/IPBlockDetailPage';
 import { InterfacesPage }   from './pages/InterfacesPage';
 import { CorrelationPage }  from './pages/CorrelationPage';
 import { ExecutivePage }    from './pages/ExecutivePage';
@@ -50,7 +51,8 @@ function AppLayout() {
           <Route path="/deteccao"  element={<DetectionPage />} />
           <Route path="/dashboard-ntopng" element={<DashboardPage />} />
           <Route path="/netflow"    element={<NetflowPage />} />
-          <Route path="/ip-blocks"   element={<IPBlocksPage />} />
+          <Route path="/ip-blocks"      element={<IPBlocksPage />} />
+          <Route path="/ip-blocks/:id"  element={<IPBlockDetailPage />} />
           <Route path="/interfaces"  element={<InterfacesPage />} />
           <Route path="/correlacao"  element={<CorrelationPage />} />
           <Route path="/executivo"   element={<ExecutivePage />} />

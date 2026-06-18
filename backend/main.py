@@ -23,6 +23,8 @@ from database import (
     init_db,
     insert_events,
     interfaces_stats,
+    ip_block_detail,
+    ip_blocks_ranking,
     ip_blocks_stats,
     list_interfaces,
     list_ip_blocks,
@@ -114,6 +116,9 @@ class IpBlockRequest(BaseModel):
     cidr: str
     label: str
     customer: str | None = None
+    description: str | None = None
+    type: str | None = None
+    category: str | None = None
 
 
 class InterfaceRequest(BaseModel):
@@ -532,7 +537,7 @@ def get_ip_blocks(user: dict = Depends(get_current_user)) -> dict:
 @app.post("/api/ip-blocks")
 def create_ip_block(body: IpBlockRequest, user: dict = Depends(get_current_user)) -> dict:
     try:
-        return upsert_ip_block(body.cidr, body.label, body.customer)
+        return upsert_ip_block(body.cidr, body.label, body.customer, body.description, body.type, body.category)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -551,6 +556,29 @@ def get_ip_blocks_stats(
     user: dict = Depends(get_current_user),
 ) -> dict:
     return {"stats": ip_blocks_stats(epoch_begin, epoch_end)}
+
+
+@app.get("/api/ip-blocks/ranking")
+def get_ip_blocks_ranking(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    return {"ranking": ip_blocks_ranking(epoch_begin, epoch_end)}
+
+
+@app.get("/api/ip-blocks/{block_id}/detail")
+def get_ip_block_detail(
+    block_id: int,
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    bucket_seconds: int = Query(default=300, ge=10, le=86400),
+    user: dict = Depends(get_current_user),
+) -> dict:
+    detail = ip_block_detail(block_id, epoch_begin, epoch_end, bucket_seconds)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Bloco não encontrado")
+    return detail
 
 
 # ─── Interfaces ───────────────────────────────────────────────────────────────

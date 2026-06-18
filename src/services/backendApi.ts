@@ -401,6 +401,10 @@ export interface IpBlock {
   cidr: string;
   label: string;
   customer: string | null;
+  description: string | null;
+  type: string | null;
+  category: string | null;
+  active: number;
   network_int: number;
   broadcast_int: number;
   created_at: string;
@@ -413,6 +417,40 @@ export interface IpBlockStats {
   total_flows: number;
 }
 
+export interface IpBlockRankingEntry extends IpBlock {
+  total_bytes: number;
+  in_bytes: number;
+  out_bytes: number;
+  total_flows: number;
+  pct: number;
+}
+
+export interface IpBlockTimeseriesPoint {
+  bucket: number;
+  in_bytes: number;
+  out_bytes: number;
+  in_flows: number;
+  out_flows: number;
+}
+
+export interface IpBlockDetail {
+  block: IpBlock;
+  summary: {
+    total_bytes: number;
+    in_bytes: number;
+    out_bytes: number;
+    total_flows: number;
+    peak_mbps: number;
+    avg_mbps: number;
+  };
+  timeseries: IpBlockTimeseriesPoint[];
+  top_asns: Array<{ asn: number; bytes: number; flows: number }>;
+  top_protocols: Array<{ protocol: string; bytes: number; flows: number }>;
+  top_ports: Array<{ port: number; protocol: string; bytes: number; flows: number }>;
+  top_src: Array<{ ip: string; bytes: number; flows: number }>;
+  top_dst: Array<{ ip: string; bytes: number; flows: number }>;
+}
+
 export async function getIpBlocks(): Promise<{ blocks: IpBlock[] }> {
   return apiFetch('/ip-blocks');
 }
@@ -421,6 +459,9 @@ export async function createIpBlock(data: {
   cidr: string;
   label: string;
   customer?: string | null;
+  description?: string | null;
+  type?: string | null;
+  category?: string | null;
 }): Promise<IpBlock> {
   return apiFetch('/ip-blocks', { method: 'POST', body: JSON.stringify(data) });
 }
@@ -434,6 +475,21 @@ export async function getIpBlocksStats(params: {
   epoch_end?: number;
 } = {}): Promise<{ stats: IpBlockStats[] }> {
   return apiFetch(`/ip-blocks/stats${buildQS(params)}`);
+}
+
+export async function getIpBlocksRanking(params: {
+  epoch_begin?: number;
+  epoch_end?: number;
+} = {}): Promise<{ ranking: IpBlockRankingEntry[] }> {
+  return apiFetch(`/ip-blocks/ranking${buildQS(params)}`);
+}
+
+export async function getIpBlockDetail(id: number, params: {
+  epoch_begin?: number;
+  epoch_end?: number;
+  bucket_seconds?: number;
+} = {}): Promise<IpBlockDetail> {
+  return apiFetch(`/ip-blocks/${id}/detail${buildQS(params)}`);
 }
 
 // ─── Interfaces ───────────────────────────────────────────────────────────────

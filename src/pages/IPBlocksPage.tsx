@@ -1,15 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Card, Table, Button, Input, Form, Select, Typography, Space, Popconfirm, message, Tag } from 'antd';
+import { Card, Table, Button, Input, Form, Select, Typography, Space, Popconfirm, message, Tag, Progress } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, ExternalLink } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import {
   getIpBlocks,
   createIpBlock,
   deleteIpBlock,
   getIpBlocksStats,
+  getIpBlocksRanking,
   type IpBlock,
   type IpBlockStats,
+  type IpBlockRankingEntry,
 } from '../services/backendApi';
 
 const { Title, Text } = Typography;
@@ -21,11 +24,23 @@ const RANGE_OPTIONS = [
   { label: 'Últimos 7 dias', value: 7 * 24 * 3600 },
 ];
 
+const BLOCK_TYPES = [
+  'Cliente', 'Transit', 'CDN', 'IX', 'Backbone', 'Servidor', 'Infraestrutura', 'Backup', 'Outros',
+].map(v => ({ label: v, value: v }));
+
+const BLOCK_CATEGORIES = [
+  'Residencial', 'Empresarial', 'Data Center', 'Upstream', 'Downstream', 'Interno', 'Externo',
+].map(v => ({ label: v, value: v }));
+
+const TYPE_COLORS: Record<string, string> = {
+  Cliente: 'blue', Transit: 'purple', CDN: 'cyan', IX: 'green',
+  Backbone: 'orange', Servidor: 'gold', Infraestrutura: 'volcano', Backup: 'default',
+};
+
 function formatBytes(bytes: number): string {
   if (!bytes) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let val = bytes;
-  let i = 0;
+  let val = bytes; let i = 0;
   while (val >= 1024 && i < units.length - 1) { val /= 1024; i++; }
   return `${val.toFixed(2)} ${units[i]}`;
 }
@@ -37,7 +52,9 @@ interface BlockRow extends IpBlock {
 }
 
 export function IPBlocksPage() {
+  const navigate = useNavigate();
   const [blocks, setBlocks] = useState<BlockRow[]>([]);
+  const [ranking, setRanking] = useState<IpBlockRankingEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [rangeSeconds, setRangeSeconds] = useState(3600);
   const [form] = Form.useForm();
@@ -48,9 +65,10 @@ export function IPBlocksPage() {
     try {
       const now = Math.floor(Date.now() / 1000);
       const epoch_begin = now - rangeSeconds;
-      const [{ blocks: bl }, { stats }] = await Promise.all([
+      const [{ blocks: bl }, { stats }, { ranking: rk }] = await Promise.all([
         getIpBlocks(),
         getIpBlocksStats({ epoch_begin, epoch_end: now }),
+        getIpBlocksRanking({ epoch_begin, epoch_end: now }),
       ]);
       const statsMap = Object.fromEntries(stats.map((s: IpBlockStats) => [s.id, s]));
       setBlocks(bl.map((b: IpBlock) => ({
@@ -59,6 +77,7 @@ export function IPBlocksPage() {
         total_packets: statsMap[b.id]?.total_packets ?? 0,
         total_flows:   statsMap[b.id]?.total_flows   ?? 0,
       })));
+      setRanking(rk);
     } catch (e: unknown) {
       message.error((e as Error).message ?? 'Erro ao carregar blocos');
     } finally {
@@ -68,10 +87,20 @@ export function IPBlocksPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const handleAdd = async (values: { cidr: string; label: string; customer?: string }) => {
+  const handleAdd = async (values: {
+    cidr: string; label: string; customer?: string;
+    description?: string; type?: string; category?: string;
+  }) => {
     setAdding(true);
     try {
-      await createIpBlock({ cidr: values.cidr.trim(), label: values.label.trim(), customer: values.customer?.trim() || null });
+      await createIpBlock({
+        cidr: values.cidr.trim(),
+        label: values.label.trim(),
+        customer: values.customer?.trim() || null,
+        description: values.description?.trim() || null,
+        type: values.type || null,
+        category: values.category || null,
+      });
       message.success('Bloco adicionado');
       form.resetFields();
       load();
@@ -96,25 +125,35 @@ export function IPBlocksPage() {
     {
       title: 'CIDR',
       dataIndex: 'cidr',
-      key: 'cidr',
       render: (v: string) => <Tag color="blue" style={{ fontFamily: 'monospace', fontSize: 13 }}>{v}</Tag>,
     },
     {
-      title: 'Label',
-      dataIndex: 'label',
+      title: 'Label / Cliente',
       key: 'label',
-      render: (v: string) => <Text strong style={{ color: '#e2e8f0' }}>{v}</Text>,
+      render: (_: unknown, r: BlockRow) => (
+        <div>
+          <Text strong style={{ color: '#e2e8f0', display: 'block' }}>{r.label}</Text>
+          {r.customer && <Text style={{ color: '#64748b', fontSize: 11 }}>{r.customer}</Text>}
+        </div>
+      ),
     },
     {
-      title: 'Cliente',
-      dataIndex: 'customer',
-      key: 'customer',
-      render: (v: string | null) => v ? <Text style={{ color: '#94a3b8' }}>{v}</Text> : <Text style={{ color: '#334155' }}>—</Text>,
+      title: 'Tipo',
+      dataIndex: 'type',
+      render: (v: string | null) => v
+        ? <Tag color={TYPE_COLORS[v] ?? 'default'} style={{ fontSize: 11 }}>{v}</Tag>
+        : <Text style={{ color: '#334155' }}>—</Text>,
+    },
+    {
+      title: 'Categoria',
+      dataIndex: 'category',
+      render: (v: string | null) => v
+        ? <Text style={{ color: '#94a3b8', fontSize: 12 }}>{v}</Text>
+        : <Text style={{ color: '#334155' }}>—</Text>,
     },
     {
       title: 'Total Bytes',
       dataIndex: 'total_bytes',
-      key: 'total_bytes',
       align: 'right',
       sorter: (a, b) => a.total_bytes - b.total_bytes,
       defaultSortOrder: 'descend',
@@ -123,39 +162,35 @@ export function IPBlocksPage() {
     {
       title: 'Fluxos',
       dataIndex: 'total_flows',
-      key: 'total_flows',
       align: 'right',
       sorter: (a, b) => a.total_flows - b.total_flows,
       render: (v: number) => <Text style={{ color: '#94a3b8', fontFamily: 'monospace' }}>{v.toLocaleString('pt-BR')}</Text>,
     },
     {
-      title: 'Pacotes',
-      dataIndex: 'total_packets',
-      key: 'total_packets',
-      align: 'right',
-      sorter: (a, b) => a.total_packets - b.total_packets,
-      render: (v: number) => <Text style={{ color: '#94a3b8', fontFamily: 'monospace' }}>{v.toLocaleString('pt-BR')}</Text>,
-    },
-    {
       title: '',
       key: 'actions',
-      width: 60,
+      width: 80,
       align: 'center',
       render: (_: unknown, row: BlockRow) => (
-        <Popconfirm
-          title="Remover este bloco?"
-          onConfirm={() => handleDelete(row.id)}
-          okText="Remover"
-          cancelText="Cancelar"
-          okButtonProps={{ danger: true }}
-        >
+        <Space size={4}>
           <Button
             type="text"
-            icon={<DeleteOutlined size={14} />}
-            danger
             size="small"
+            icon={<ExternalLink size={13} />}
+            onClick={e => { e.stopPropagation(); navigate(`/ip-blocks/${row.id}`); }}
+            style={{ color: '#00c8f0' }}
+            title="Abrir dashboard"
           />
-        </Popconfirm>
+          <Popconfirm
+            title="Remover este bloco?"
+            onConfirm={() => handleDelete(row.id)}
+            okText="Remover" cancelText="Cancelar"
+            okButtonProps={{ danger: true }}
+          >
+            <Button type="text" icon={<DeleteOutlined />} danger size="small"
+              onClick={e => e.stopPropagation()} />
+          </Popconfirm>
+        </Space>
       ),
     },
   ];
@@ -165,64 +200,43 @@ export function IPBlocksPage() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
         <Title level={4} style={{ color: '#e2e8f0', margin: 0 }}>Blocos IP Monitorados</Title>
         <Space>
-          <Select
-            value={rangeSeconds}
-            onChange={setRangeSeconds}
-            options={RANGE_OPTIONS}
-            style={{ width: 150 }}
-          />
-          <Button
-            icon={<RefreshCw size={14} />}
-            onClick={load}
-            loading={loading}
-            style={{ background: '#0f1f3d', borderColor: '#1e2d4a', color: '#94a3b8' }}
-          >
+          <Select value={rangeSeconds} onChange={setRangeSeconds} options={RANGE_OPTIONS} style={{ width: 150 }} />
+          <Button icon={<RefreshCw size={14} />} onClick={load} loading={loading}
+            style={{ background: '#0f1f3d', borderColor: '#1e2d4a', color: '#94a3b8' }}>
             Atualizar
           </Button>
         </Space>
       </div>
 
       {/* Add form */}
-      <Card
-        style={{ background: '#0a1628', border: '1px solid #1e2d4a', marginBottom: 16, borderRadius: 8 }}
-        bodyStyle={{ padding: '16px 20px' }}
-      >
-        <Text style={{ color: '#94a3b8', display: 'block', marginBottom: 12 }}>
-          Adicionar bloco IP (CIDR)
-        </Text>
+      <Card style={{ background: '#0a1628', border: '1px solid #1e2d4a', marginBottom: 16, borderRadius: 8 }}
+        styles={{ body: { padding: '16px 20px' } }}>
+        <Text style={{ color: '#94a3b8', display: 'block', marginBottom: 12 }}>Adicionar bloco IP (CIDR)</Text>
         <Form form={form} layout="inline" onFinish={handleAdd}>
-          <Form.Item
-            name="cidr"
-            rules={[
-              { required: true, message: 'Informe o CIDR' },
-              { pattern: /^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/, message: 'Formato inválido (ex: 192.168.0.0/24)' },
-            ]}
-          >
-            <Input
-              placeholder="192.168.0.0/24"
-              style={{ width: 180, fontFamily: 'monospace', background: '#060d1f', borderColor: '#1e2d4a', color: '#e2e8f0' }}
-            />
+          <Form.Item name="cidr" rules={[
+            { required: true, message: 'Informe o CIDR' },
+            { pattern: /^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/, message: 'Formato inválido (ex: 192.168.0.0/24)' },
+          ]}>
+            <Input placeholder="192.168.0.0/24" style={{ width: 170, fontFamily: 'monospace', background: '#060d1f', borderColor: '#1e2d4a', color: '#e2e8f0' }} />
           </Form.Item>
           <Form.Item name="label" rules={[{ required: true, message: 'Informe o label' }]}>
-            <Input
-              placeholder="Label"
-              style={{ width: 180, background: '#060d1f', borderColor: '#1e2d4a', color: '#e2e8f0' }}
-            />
+            <Input placeholder="Label" style={{ width: 150, background: '#060d1f', borderColor: '#1e2d4a', color: '#e2e8f0' }} />
           </Form.Item>
           <Form.Item name="customer">
-            <Input
-              placeholder="Cliente (opcional)"
-              style={{ width: 180, background: '#060d1f', borderColor: '#1e2d4a', color: '#e2e8f0' }}
-            />
+            <Input placeholder="Cliente" style={{ width: 140, background: '#060d1f', borderColor: '#1e2d4a', color: '#e2e8f0' }} />
+          </Form.Item>
+          <Form.Item name="type">
+            <Select placeholder="Tipo" allowClear options={BLOCK_TYPES} style={{ width: 130 }} />
+          </Form.Item>
+          <Form.Item name="category">
+            <Select placeholder="Categoria" allowClear options={BLOCK_CATEGORIES} style={{ width: 140 }} />
+          </Form.Item>
+          <Form.Item name="description">
+            <Input placeholder="Descrição (opcional)" style={{ width: 200, background: '#060d1f', borderColor: '#1e2d4a', color: '#e2e8f0' }} />
           </Form.Item>
           <Form.Item>
-            <Button
-              type="primary"
-              htmlType="submit"
-              loading={adding}
-              icon={<PlusOutlined />}
-              style={{ background: '#00c8f0', borderColor: '#00c8f0', color: '#000' }}
-            >
+            <Button type="primary" htmlType="submit" loading={adding} icon={<PlusOutlined />}
+              style={{ background: '#00c8f0', borderColor: '#00c8f0', color: '#000' }}>
               Adicionar
             </Button>
           </Form.Item>
@@ -230,10 +244,8 @@ export function IPBlocksPage() {
       </Card>
 
       {/* Blocks table */}
-      <Card
-        style={{ background: '#0a1628', border: '1px solid #1e2d4a', borderRadius: 8 }}
-        bodyStyle={{ padding: 0 }}
-      >
+      <Card style={{ background: '#0a1628', border: '1px solid #1e2d4a', borderRadius: 8, marginBottom: 16 }}
+        styles={{ body: { padding: 0 } }}>
         <Table
           columns={columns}
           dataSource={blocks}
@@ -241,10 +253,43 @@ export function IPBlocksPage() {
           loading={loading}
           pagination={false}
           size="small"
+          onRow={row => ({ onClick: () => navigate(`/ip-blocks/${row.id}`), style: { cursor: 'pointer' } })}
           locale={{ emptyText: <Text style={{ color: '#334155' }}>Nenhum bloco cadastrado</Text> }}
           style={{ background: 'transparent' }}
         />
       </Card>
+
+      {/* Ranking section */}
+      {ranking.length > 0 && (
+        <Card title={<span style={{ color: '#94a3b8' }}>Ranking de participação no tráfego</span>}
+          style={{ background: '#0a1628', border: '1px solid #1e2d4a', borderRadius: 8 }}
+          styles={{ body: { padding: '12px 20px' } }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {ranking.slice(0, 10).map(r => (
+              <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
+                onClick={() => navigate(`/ip-blocks/${r.id}`)}>
+                <Tag color="blue" style={{ fontFamily: 'monospace', width: 145, textAlign: 'center', flexShrink: 0 }}>{r.cidr}</Tag>
+                <Text style={{ color: '#94a3b8', width: 180, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.label}</Text>
+                <div style={{ flex: 1 }}>
+                  <Progress
+                    percent={Math.min(r.pct, 100)}
+                    showInfo={false}
+                    strokeColor="#00c8f0"
+                    trailColor="#1e2d4a"
+                    size="small"
+                  />
+                </div>
+                <Text style={{ color: '#00c8f0', fontFamily: 'monospace', width: 90, textAlign: 'right', flexShrink: 0 }}>
+                  {formatBytes(r.total_bytes)}
+                </Text>
+                <Text style={{ color: '#475569', width: 45, textAlign: 'right', flexShrink: 0, fontSize: 12 }}>
+                  {r.pct.toFixed(1)}%
+                </Text>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
     </main>
   );
 }
