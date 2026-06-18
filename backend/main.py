@@ -22,6 +22,8 @@ from database import (
     get_alert_statuses,
     init_db,
     insert_events,
+    interface_detail,
+    interfaces_ranking,
     interfaces_stats,
     ip_block_detail,
     ip_blocks_ranking,
@@ -127,6 +129,12 @@ class InterfaceRequest(BaseModel):
     name: str
     description: str | None = None
     capacity_mbps: float | None = None
+    equipment: str | None = None
+    link_type: str | None = None
+    operator: str | None = None
+    partner: str | None = None
+    city: str | None = None
+    pop: str | None = None
 
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -590,7 +598,11 @@ def get_interfaces(user: dict = Depends(get_current_user)) -> dict:
 
 @app.post("/api/interfaces")
 def create_interface(body: InterfaceRequest, user: dict = Depends(get_current_user)) -> dict:
-    return upsert_interface(body.ifid, body.router_ip, body.name, body.description, body.capacity_mbps)
+    return upsert_interface(
+        body.ifid, body.router_ip, body.name, body.description, body.capacity_mbps,
+        equipment=body.equipment, link_type=body.link_type, operator=body.operator,
+        partner=body.partner, city=body.city, pop=body.pop,
+    )
 
 
 @app.delete("/api/interfaces/{iface_id}")
@@ -615,6 +627,29 @@ def get_discovered_interfaces(
     user: dict = Depends(get_current_user),
 ) -> dict:
     return {"interfaces": discovered_interfaces(epoch_begin)}
+
+
+@app.get("/api/interfaces/ranking")
+def get_interfaces_ranking(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    return {"ranking": interfaces_ranking(epoch_begin, epoch_end)}
+
+
+@app.get("/api/interfaces/{iface_id}/detail")
+def get_interface_detail(
+    iface_id: int,
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    bucket_seconds: int = Query(default=300, ge=10, le=86400),
+    user: dict = Depends(get_current_user),
+) -> dict:
+    detail = interface_detail(iface_id, epoch_begin, epoch_end, bucket_seconds)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Interface não encontrada")
+    return detail
 
 
 @app.get("/api/health")

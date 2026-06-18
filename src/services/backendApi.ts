@@ -501,6 +501,12 @@ export interface NetInterface {
   name: string;
   description: string | null;
   capacity_mbps: number | null;
+  equipment: string | null;
+  link_type: string | null;
+  operator: string | null;
+  partner: string | null;
+  city: string | null;
+  pop: string | null;
   created_at: string;
 }
 
@@ -512,6 +518,45 @@ export interface InterfaceStats {
   packets_out: number;
   flows_in: number;
   flows_out: number;
+}
+
+export interface InterfaceRankingEntry extends NetInterface {
+  total_bytes: number;
+  in_bytes: number;
+  out_bytes: number;
+  total_flows: number;
+  avg_mbps: number;
+  avg_in_mbps: number;
+  avg_out_mbps: number;
+  utilization_pct: number;
+  imbalance_ratio: number;
+}
+
+export interface InterfaceTimeseriesPoint {
+  bucket: number;
+  in_bytes: number;
+  out_bytes: number;
+  in_flows: number;
+  out_flows: number;
+}
+
+export interface InterfaceDetail {
+  iface: NetInterface;
+  summary: {
+    total_bytes: number;
+    in_bytes: number;
+    out_bytes: number;
+    total_flows: number;
+    peak_mbps: number;
+    avg_mbps: number;
+    utilization_pct: number;
+  };
+  timeseries: InterfaceTimeseriesPoint[];
+  top_asns: Array<{ asn: number; bytes: number; flows: number }>;
+  top_protocols: Array<{ protocol: string; bytes: number; flows: number }>;
+  top_ports: Array<{ port: number; protocol: string; bytes: number; flows: number }>;
+  top_src: Array<{ ip: string; bytes: number; flows: number }>;
+  top_dst: Array<{ ip: string; bytes: number; flows: number }>;
 }
 
 export interface DiscoveredInterface {
@@ -531,6 +576,12 @@ export async function createInterface(data: {
   name: string;
   description?: string | null;
   capacity_mbps?: number | null;
+  equipment?: string | null;
+  link_type?: string | null;
+  operator?: string | null;
+  partner?: string | null;
+  city?: string | null;
+  pop?: string | null;
 }): Promise<NetInterface> {
   return apiFetch('/interfaces', { method: 'POST', body: JSON.stringify(data) });
 }
@@ -550,6 +601,21 @@ export async function getDiscoveredInterfaces(params: {
   epoch_begin?: number;
 } = {}): Promise<{ interfaces: DiscoveredInterface[] }> {
   return apiFetch(`/interfaces/discovered${buildQS(params)}`);
+}
+
+export async function getInterfacesRanking(params: {
+  epoch_begin?: number;
+  epoch_end?: number;
+} = {}): Promise<{ ranking: InterfaceRankingEntry[] }> {
+  return apiFetch(`/interfaces/ranking${buildQS(params)}`);
+}
+
+export async function getInterfaceDetail(id: number, params: {
+  epoch_begin?: number;
+  epoch_end?: number;
+  bucket_seconds?: number;
+} = {}): Promise<InterfaceDetail> {
+  return apiFetch(`/interfaces/${id}/detail${buildQS(params)}`);
 }
 
 export async function checkBackendHealth(): Promise<boolean> {

@@ -151,6 +151,7 @@ def init_db() -> None:
         """)
         _migrate_events_table(conn)
         _migrate_ip_blocks_table(conn)
+        _migrate_interfaces_table(conn)
 
 
 def normalize_netflow_event(ev: dict) -> dict:
@@ -1146,23 +1147,61 @@ def ip_blocks_ranking(
 
 # ─── Interfaces ───────────────────────────────────────────────────────────────
 
+_INTERFACES_EXTRA: dict[str, str] = {
+    "equipment":  "TEXT",
+    "link_type":  "TEXT",
+    "operator":   "TEXT",
+    "partner":    "TEXT",
+    "city":       "TEXT",
+    "pop":        "TEXT",
+}
+
+
+def _migrate_interfaces_table(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(interfaces)")}
+    for col, col_type in _INTERFACES_EXTRA.items():
+        if col not in existing:
+            conn.execute(f"ALTER TABLE interfaces ADD COLUMN {col} {col_type}")
+
+
 def list_interfaces() -> list[dict]:
     with get_db() as conn:
         rows = conn.execute("SELECT * FROM interfaces ORDER BY name").fetchall()
     return [dict(r) for r in rows]
 
 
-def upsert_interface(ifid: int, router_ip: str, name: str, description: str | None, capacity_mbps: float | None) -> dict:
+def upsert_interface(
+    ifid: int,
+    router_ip: str,
+    name: str,
+    description: str | None,
+    capacity_mbps: float | None,
+    equipment: str | None = None,
+    link_type: str | None = None,
+    operator: str | None = None,
+    partner: str | None = None,
+    city: str | None = None,
+    pop: str | None = None,
+) -> dict:
     now = datetime.now(timezone.utc).isoformat()
     with get_db() as conn:
         conn.execute(
-            """INSERT INTO interfaces (ifid, router_ip, name, description, capacity_mbps, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)
+            """INSERT INTO interfaces
+                   (ifid, router_ip, name, description, capacity_mbps,
+                    equipment, link_type, operator, partner, city, pop, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(ifid, router_ip) DO UPDATE SET
                    name=excluded.name,
                    description=excluded.description,
-                   capacity_mbps=excluded.capacity_mbps""",
-            (ifid, router_ip, name, description, capacity_mbps, now),
+                   capacity_mbps=excluded.capacity_mbps,
+                   equipment=excluded.equipment,
+                   link_type=excluded.link_type,
+                   operator=excluded.operator,
+                   partner=excluded.partner,
+                   city=excluded.city,
+                   pop=excluded.pop""",
+            (ifid, router_ip, name, description, capacity_mbps,
+             equipment, link_type, operator, partner, city, pop, now),
         )
         row = conn.execute(
             "SELECT * FROM interfaces WHERE ifid = ? AND router_ip = ?", (ifid, router_ip)
@@ -1174,6 +1213,230 @@ def delete_interface(iface_id: int) -> bool:
     with get_db() as conn:
         cur = conn.execute("DELETE FROM interfaces WHERE id = ?", (iface_id,))
     return cur.rowcount > 0
+
+
+def interface_detail(
+    iface_id: int,
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    bucket_seconds: int = 300,
+) -> dict | None:
+    """Dashboard completo de uma interface: IN/OUT timeseries + top ASN/proto/porta/IPs."""
+    with get_db() as conn:
+        iface = conn.execute("SELECT * FROM interfaces WHERE id = ?", (iface_id,)).fetchone()
+        if not iface:
+            return None
+
+        ifid = iface["ifid"]
+        router_ip = iface["router_ip"]
+
+        ep: list = []
+        ec = ["source = 'goflow2'"]
+        if epoch_begin is not None:
+            ec.append("tstamp >= ?"); ep.append(epoch_begin)
+        if epoch_end is not None:
+            ec.append("tstamp <= ?"); ep.append(epoch_end)
+        if router_ip:
+            ec.append("sampler = ?"); ep.append(router_ip)
+        ew = " AND ".join(ec)
+
+        in_cond  = f"in_if  = {ifid}"
+        out_cond = f"out_if = {ifid}"
+        iface_cond = f"({in_cond} OR {out_cond})"
+
+        # Summary
+        summ = conn.execute(
+            f"""SELECT COALESCE(SUM(bytes), 0) AS total_bytes,
+                       COALESCE(SUM(CASE WHEN {in_cond}  THEN bytes ELSE 0 END), 0) AS in_bytes,
+                       COALESCE(SUM(CASE WHEN {out_cond} THEN bytes ELSE 0 END), 0) AS out_bytes,
+                       COUNT(*) AS total_flows
+                FROM events WHERE {ew} AND {iface_cond}""",
+            ep,
+        ).fetchone()
+
+        # IN/OUT timeseries
+        ts_rows = conn.execute(
+            f"""SELECT (tstamp / ?) * ? AS bucket,
+                       COALESCE(SUM(CASE WHEN {in_cond}  THEN bytes ELSE 0 END), 0) AS in_bytes,
+                       COALESCE(SUM(CASE WHEN {out_cond} THEN bytes ELSE 0 END), 0) AS out_bytes,
+                       COALESCE(SUM(CASE WHEN {in_cond}  THEN 1 ELSE 0 END), 0) AS in_flows,
+                       COALESCE(SUM(CASE WHEN {out_cond} THEN 1 ELSE 0 END), 0) AS out_flows
+                FROM events WHERE {ew} AND {iface_cond}
+                GROUP BY bucket ORDER BY bucket ASC""",
+            [bucket_seconds, bucket_seconds, *ep],
+        ).fetchall()
+
+        # Top ASNs (src_as for IN, dst_as for OUT — who is communicating via this interface)
+        asn_in = conn.execute(
+            f"""SELECT src_as AS asn,
+                       COALESCE(SUM(bytes), 0) AS bytes,
+                       COUNT(*) AS flows
+                FROM events WHERE {ew} AND {in_cond} AND src_as IS NOT NULL AND src_as != 0
+                GROUP BY src_as ORDER BY bytes DESC LIMIT 10""",
+            ep,
+        ).fetchall()
+        asn_out = conn.execute(
+            f"""SELECT dst_as AS asn,
+                       COALESCE(SUM(bytes), 0) AS bytes,
+                       COUNT(*) AS flows
+                FROM events WHERE {ew} AND {out_cond} AND dst_as IS NOT NULL AND dst_as != 0
+                GROUP BY dst_as ORDER BY bytes DESC LIMIT 10""",
+            ep,
+        ).fetchall()
+
+        # Merge ASN results
+        asn_map: dict[int, dict] = {}
+        for r in asn_in:
+            asn_map[r["asn"]] = {"asn": r["asn"], "bytes": r["bytes"] or 0, "flows": r["flows"]}
+        for r in asn_out:
+            a = r["asn"]
+            if a in asn_map:
+                asn_map[a]["bytes"] += r["bytes"] or 0
+                asn_map[a]["flows"] += r["flows"]
+            else:
+                asn_map[a] = {"asn": a, "bytes": r["bytes"] or 0, "flows": r["flows"]}
+        top_asns = sorted(asn_map.values(), key=lambda x: x["bytes"], reverse=True)[:10]
+
+        # Top protocols
+        proto_rows = conn.execute(
+            f"""SELECT protocol,
+                       COALESCE(SUM(bytes), 0) AS bytes,
+                       COUNT(*) AS flows
+                FROM events WHERE {ew} AND {iface_cond} AND protocol IS NOT NULL
+                GROUP BY protocol ORDER BY bytes DESC LIMIT 10""",
+            ep,
+        ).fetchall()
+
+        # Top destination ports (services flowing through interface)
+        port_rows = conn.execute(
+            f"""SELECT dst_port AS port, protocol,
+                       COALESCE(SUM(bytes), 0) AS bytes,
+                       COUNT(*) AS flows
+                FROM events WHERE {ew} AND {in_cond} AND dst_port IS NOT NULL
+                GROUP BY dst_port, protocol ORDER BY bytes DESC LIMIT 10""",
+            ep,
+        ).fetchall()
+
+        # Top source IPs (sending IN through this interface)
+        src_rows = conn.execute(
+            f"""SELECT src_ip AS ip,
+                       COALESCE(SUM(bytes), 0) AS bytes,
+                       COUNT(*) AS flows
+                FROM events WHERE {ew} AND {in_cond} AND src_ip IS NOT NULL
+                GROUP BY src_ip ORDER BY bytes DESC LIMIT 10""",
+            ep,
+        ).fetchall()
+
+        # Top destination IPs (receiving OUT through this interface)
+        dst_rows = conn.execute(
+            f"""SELECT dst_ip AS ip,
+                       COALESCE(SUM(bytes), 0) AS bytes,
+                       COUNT(*) AS flows
+                FROM events WHERE {ew} AND {out_cond} AND dst_ip IS NOT NULL
+                GROUP BY dst_ip ORDER BY bytes DESC LIMIT 10""",
+            ep,
+        ).fetchall()
+
+    ts_list = [dict(r) for r in ts_rows]
+    bucket_bytes = [r["in_bytes"] + r["out_bytes"] for r in ts_list]
+    peak_bytes = max(bucket_bytes) if bucket_bytes else 0
+    avg_bytes  = sum(bucket_bytes) / len(bucket_bytes) if bucket_bytes else 0
+
+    capacity_mbps = iface["capacity_mbps"] or 0
+
+    def to_mbps(b: float) -> float:
+        return round(b * 8 / max(bucket_seconds, 1) / 1_000_000, 3)
+
+    avg_mbps = to_mbps(avg_bytes)
+    utilization_pct = round(avg_mbps / capacity_mbps * 100, 1) if capacity_mbps > 0 else 0.0
+
+    return {
+        "iface": dict(iface),
+        "summary": {
+            "total_bytes":     summ["total_bytes"] or 0,
+            "in_bytes":        summ["in_bytes"] or 0,
+            "out_bytes":       summ["out_bytes"] or 0,
+            "total_flows":     summ["total_flows"] or 0,
+            "peak_mbps":       to_mbps(peak_bytes),
+            "avg_mbps":        avg_mbps,
+            "utilization_pct": utilization_pct,
+        },
+        "timeseries":    ts_list,
+        "top_asns":      top_asns,
+        "top_protocols": [dict(r) for r in proto_rows],
+        "top_ports":     [dict(r) for r in port_rows],
+        "top_src":       [dict(r) for r in src_rows],
+        "top_dst":       [dict(r) for r in dst_rows],
+    }
+
+
+def interfaces_ranking(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+) -> list[dict]:
+    """Ranking de interfaces por saturação e volume, com flag de imbalance."""
+    ep: list = []
+    ec = ["source = 'goflow2'"]
+    if epoch_begin is not None:
+        ec.append("tstamp >= ?"); ep.append(epoch_begin)
+    if epoch_end is not None:
+        ec.append("tstamp <= ?"); ep.append(epoch_end)
+    ew = " AND ".join(ec)
+
+    with get_db() as conn:
+        ifaces = conn.execute("SELECT * FROM interfaces ORDER BY name").fetchall()
+        if not ifaces:
+            return []
+
+        results = []
+        for iface in ifaces:
+            ifid = iface["ifid"]
+            router_ip = iface["router_ip"]
+            capacity_mbps = iface["capacity_mbps"] or 0
+
+            ep_iface = list(ep)
+            ec_iface = list(ec)
+            if router_ip:
+                ec_iface.append("sampler = ?"); ep_iface.append(router_ip)
+            ew_iface = " AND ".join(ec_iface)
+
+            row = conn.execute(
+                f"""SELECT COALESCE(SUM(bytes), 0) AS total_bytes,
+                           COALESCE(SUM(CASE WHEN in_if  = {ifid} THEN bytes ELSE 0 END), 0) AS in_bytes,
+                           COALESCE(SUM(CASE WHEN out_if = {ifid} THEN bytes ELSE 0 END), 0) AS out_bytes,
+                           COUNT(*) AS total_flows,
+                           COUNT(DISTINCT tstamp / 60) AS buckets
+                    FROM events WHERE {ew_iface} AND (in_if = {ifid} OR out_if = {ifid})""",
+                ep_iface,
+            ).fetchone()
+
+            in_b  = row["in_bytes"]  or 0
+            out_b = row["out_bytes"] or 0
+            total = row["total_bytes"] or 0
+            buckets = row["buckets"] or 1
+
+            avg_in_mbps  = round(in_b  * 8 / buckets / 60 / 1_000_000, 3)
+            avg_out_mbps = round(out_b * 8 / buckets / 60 / 1_000_000, 3)
+            avg_mbps = round((in_b + out_b) * 8 / buckets / 60 / 1_000_000 / 2, 3)
+
+            utilization_pct = round(avg_mbps / capacity_mbps * 100, 1) if capacity_mbps > 0 else 0.0
+            imbalance_ratio = round(max(in_b, out_b) / max(min(in_b, out_b), 1), 2)
+
+            results.append({
+                **dict(iface),
+                "total_bytes":     total,
+                "in_bytes":        in_b,
+                "out_bytes":       out_b,
+                "total_flows":     row["total_flows"] or 0,
+                "avg_mbps":        avg_mbps,
+                "avg_in_mbps":     avg_in_mbps,
+                "avg_out_mbps":    avg_out_mbps,
+                "utilization_pct": utilization_pct,
+                "imbalance_ratio": imbalance_ratio,
+            })
+
+        results.sort(key=lambda x: x["utilization_pct"], reverse=True)
+        return results
 
 
 def interfaces_stats(
