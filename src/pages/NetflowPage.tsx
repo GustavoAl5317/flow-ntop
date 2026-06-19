@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Card, Table, Tag, Select, Button, Input, message, Spin } from 'antd';
+import { Card, Table, Tag, Select, Button, Input, message, Spin, Space, Progress } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import Chart from 'react-apexcharts';
 import type { ApexOptions } from 'apexcharts';
@@ -224,7 +224,14 @@ function ProtocolEvolutionChart({ data, bucketSeconds, loading }: { data: Netflo
 
 // ─── ASN evolution chart ───────────────────────────────────────────────────────
 
-function AsnEvolutionChart({ data, bucketSeconds, loading }: { data: NetflowAsnTimeseriesResult; bucketSeconds: number; loading: boolean }) {
+function AsnEvolutionChart({
+  data, bucketSeconds, loading, onAsnClick,
+}: {
+  data: NetflowAsnTimeseriesResult;
+  bucketSeconds: number;
+  loading: boolean;
+  onAsnClick?: (asn: number) => void;
+}) {
   if (loading || !data.series.length) {
     return (
       <Card title={<span style={{ color: '#94a3b8' }}>Evolução por ASN Origem</span>}
@@ -244,19 +251,38 @@ function AsnEvolutionChart({ data, bucketSeconds, loading }: { data: NetflowAsnT
   }));
 
   const opts: ApexOptions = {
-    chart: { background: 'transparent', toolbar: { show: true, tools: { zoom: true, zoomin: true, zoomout: true, pan: true, reset: true, download: false } }, animations: { enabled: false } },
+    chart: {
+      background: 'transparent',
+      toolbar: { show: true, tools: { zoom: true, zoomin: true, zoomout: true, pan: true, reset: true, download: false } },
+      animations: { enabled: false },
+      events: {
+        dataPointSelection: (_e: unknown, _ctx: unknown, cfg: { seriesIndex: number; w: { globals: { seriesNames: string[] } } } | undefined) => {
+          if (!cfg) return;
+          const name = cfg.w.globals.seriesNames[cfg.seriesIndex];
+          const asnNum = parseInt(name.replace('AS', ''), 10);
+          if (!isNaN(asnNum)) onAsnClick?.(asnNum);
+        },
+      },
+    },
     stroke: { curve: 'smooth', width: 2 },
     colors: data.asns.map((_, i) => ASN_PALETTE[i % ASN_PALETTE.length]),
     xaxis: { categories: labels, labels: { style: { colors: '#475569', fontSize: '10px' }, rotate: 0 }, tickAmount: Math.min(10, labels.length) },
     yaxis: { labels: { style: { colors: '#475569', fontSize: '11px' }, formatter: v => `${v.toFixed(1)} Mbps` } },
     grid: { borderColor: '#1e2d4a', strokeDashArray: 4 },
     tooltip: { theme: 'dark', y: { formatter: v => `${v.toFixed(2)} Mbps` } },
-    legend: { labels: { colors: '#94a3b8' }, fontSize: '12px' },
+    legend: { labels: { colors: '#94a3b8' }, fontSize: '12px', onItemClick: { toggleDataSeries: false } },
     dataLabels: { enabled: false },
+    states: { active: { filter: { type: 'darken' } } },
   };
 
   return (
-    <Card title={<span style={{ color: '#94a3b8' }}>Evolução Top 5 ASNs Origem (Mbps)</span>}
+    <Card
+      title={
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ color: '#94a3b8' }}>Evolução Top 5 ASNs Origem (Mbps)</span>
+          <span style={{ color: '#475569', fontSize: 11 }}>clique no ponto → drill-down</span>
+        </div>
+      }
       style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 12 } }}>
       <Chart type="line" options={opts} series={series} height={230} />
     </Card>
@@ -440,6 +466,7 @@ export function NetflowPage() {
   const [topTalkersDst, setTopTalkersDst] = useState<NetflowTopTalker[]>([]);
   const [ipBlockMap, setIpBlockMap]       = useState<Record<string, { id: number; cidr: string; label: string; type: string | null }>>({});
   const [topPorts, setTopPorts]           = useState<NetflowTopPort[]>([]);
+  const [portType, setPortType]           = useState<'src' | 'dst'>('dst');
   const [topAsnSrc, setTopAsnSrc]         = useState<NetflowTopAsn[]>([]);
   const [topAsnDst, setTopAsnDst]         = useState<NetflowTopAsn[]>([]);
   const [protocols, setProtocols]         = useState<NetflowProtocol[]>([]);
@@ -467,7 +494,7 @@ export function NetflowPage() {
       getNetflowSummary({ ...base, bucket_seconds }),           // 0
       getNetflowTopTalkers({ ...limited, direction: 'src' }),  // 1
       getNetflowTopTalkers({ ...limited, direction: 'dst' }),  // 2
-      getNetflowTopPorts({ ...limited, port_type: 'dst' }),    // 3
+      getNetflowTopPorts({ ...limited, port_type: portType }),  // 3
       getNetflowTopAsn({ ...limited, asn_type: 'src' }),       // 4
       getNetflowTopAsn({ ...limited, asn_type: 'dst' }),       // 5
       getNetflowProtocols(base),                                // 6
@@ -502,7 +529,7 @@ export function NetflowPage() {
       setError('Não foi possível carregar dados de NetFlow. Verifique a conexão com o backend.');
     }
     setLoading(false);
-  }, [rangeSeconds, appliedFilters]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [rangeSeconds, appliedFilters, portType]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(); }, [load]);
 
@@ -525,7 +552,20 @@ export function NetflowPage() {
 
   // Column definitions (depend on runtime state/navigate)
   const talkerCols = makeTopTalkerColumns(ipBlockMap, navigate);
-  const asnCols    = makeAsnColumns(navigate);
+  const asnCols    = makeAsnColumns(navigate, summary?.total_bytes ?? 0);
+
+  // CDN distribution: sum bytes from top talkers whose IPs resolve to a CDN block
+  const cdnDistribution: Array<{ label: string; bytes: number }> = (() => {
+    const providers: Record<string, number> = {};
+    for (const talker of [...topTalkersSrc, ...topTalkersDst]) {
+      const block = ipBlockMap[talker.ip];
+      if (block?.type === 'CDN') {
+        providers[block.label] = (providers[block.label] ?? 0) + talker.total_bytes;
+      }
+    }
+    return Object.entries(providers).sort((a, b) => b[1] - a[1]).map(([label, bytes]) => ({ label, bytes }));
+  })();
+  const totalCdnBytes = cdnDistribution.reduce((s, e) => s + e.bytes, 0);
 
   // Expandable row for top talker tables
   const expandable = {
@@ -625,7 +665,8 @@ export function NetflowPage() {
       {/* ─── Evolução por protocolo + ASN ────────────────────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
         <ProtocolEvolutionChart data={protoTs} bucketSeconds={bucketSecs} loading={loading} />
-        <AsnEvolutionChart data={asnTs} bucketSeconds={bucketSecs} loading={loading} />
+        <AsnEvolutionChart data={asnTs} bucketSeconds={bucketSecs} loading={loading}
+          onAsnClick={asnNum => navigate(`/asn/${asnNum}`)} />
       </div>
 
       {/* ─── Top Talkers / Portas / Protocolos / ASN ─────────────────────── */}
@@ -648,7 +689,26 @@ export function NetflowPage() {
             locale={{ emptyText: 'Sem dados' }} />
         </Card>
 
-        <Card title={<span style={{ color: '#94a3b8' }}>Top Portas de Destino</span>}
+        <Card
+          title={
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ color: '#94a3b8' }}>Top Portas {portType === 'dst' ? 'de Destino' : 'de Origem'}</span>
+              <Space size={4}>
+                <Button
+                  size="small"
+                  type={portType === 'dst' ? 'primary' : 'default'}
+                  onClick={() => setPortType('dst')}
+                  style={{ fontSize: 11, padding: '0 8px', height: 22, ...(portType !== 'dst' ? { background: '#0f1f3d', borderColor: '#1e2d4a', color: '#64748b' } : {}) }}
+                >DST</Button>
+                <Button
+                  size="small"
+                  type={portType === 'src' ? 'primary' : 'default'}
+                  onClick={() => setPortType('src')}
+                  style={{ fontSize: 11, padding: '0 8px', height: 22, ...(portType !== 'src' ? { background: '#0f1f3d', borderColor: '#1e2d4a', color: '#64748b' } : {}) }}
+                >SRC</Button>
+              </Space>
+            </div>
+          }
           style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 8 } }}>
           <Table<NetflowTopPort>
             size="small" rowKey={r => `${r.port}-${r.protocol}`} loading={loading} pagination={false}
@@ -674,6 +734,44 @@ export function NetflowPage() {
             dataSource={topAsnDst} columns={asnCols} locale={{ emptyText: 'Sem dados' }} />
         </Card>
       </div>
+
+      {/* ─── CDN distribution ───────────────────────────────────────────── */}
+      {cdnDistribution.length > 0 && (
+        <Card
+          title={
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ color: '#94a3b8' }}>Distribuição de Tráfego CDN</span>
+              <span style={{ color: '#475569', fontSize: 12 }}>
+                {formatBytes(totalCdnBytes)} identificados nos top talkers
+              </span>
+            </div>
+          }
+          style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }}
+          styles={{ body: { padding: '12px 16px' } }}
+        >
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10 }}>
+            {cdnDistribution.map(({ label, bytes }) => {
+              const pct = totalCdnBytes > 0 ? (bytes / totalCdnBytes * 100) : 0;
+              const color = label === 'Cloudflare' ? '#f97316'
+                : label === 'Google'    ? '#3b82f6'
+                : label === 'Fastly'    ? '#ec4899'
+                : label === 'Akamai'    ? '#8b5cf6'
+                : '#22c55e'; // Amazon + others
+              return (
+                <div key={label} style={{ background: '#060d1f', border: '1px solid #1e2d4a', borderRadius: 6, padding: '10px 12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                    <span style={{ color, fontWeight: 600, fontSize: 13 }}>{label}</span>
+                    <span style={{ color: '#94a3b8', fontFamily: 'monospace', fontSize: 12 }}>{pct.toFixed(1)}%</span>
+                  </div>
+                  <Progress percent={parseFloat(pct.toFixed(1))} showInfo={false} size="small"
+                    strokeColor={color} trailColor="#1e2d4a" style={{ marginBottom: 4 }} />
+                  <span style={{ color: '#475569', fontFamily: 'monospace', fontSize: 11 }}>{formatBytes(bytes)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
 
       {/* ─── Bandwidth by client ─────────────────────────────────────────── */}
       <Card title={<span style={{ color: '#94a3b8' }}>Banda por Cliente (Top Talkers)</span>}
@@ -751,18 +849,31 @@ const protocolColumns: ColumnsType<NetflowProtocol> = [
   { title: 'Fluxos', dataIndex: 'flows' },
 ];
 
-function makeAsnColumns(navigate: (path: string) => void): ColumnsType<NetflowTopAsn> {
+function makeAsnColumns(navigate: (path: string) => void, totalBytes: number): ColumnsType<NetflowTopAsn> {
   return [
     { title: 'ASN', dataIndex: 'asn',
-      render: v => (
+      render: (v: number) => (
         <span style={{ fontFamily: 'monospace', color: '#8b5cf6', cursor: 'pointer' }}
           onClick={() => navigate(`/asn/${v}`)}>AS{v}</span>
       )},
     { title: 'Volume', dataIndex: 'total_bytes',
       sorter: (a, b) => a.total_bytes - b.total_bytes, defaultSortOrder: 'descend',
-      render: v => formatBytes(v) },
-    { title: 'Pacotes', dataIndex: 'total_packets',
-      render: v => (v ?? 0).toLocaleString('pt-BR') },
+      render: (v: number) => formatBytes(v) },
+    {
+      title: '% Total', dataIndex: 'total_bytes', key: 'pct', width: 110,
+      render: (v: number) => {
+        const pct = totalBytes > 0 ? (v / totalBytes * 100) : 0;
+        return (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <Progress percent={parseFloat(pct.toFixed(1))} size="small" showInfo={false}
+              strokeColor="#8b5cf6" style={{ flex: 1, marginBottom: 0 }} />
+            <span style={{ color: '#8b5cf6', fontFamily: 'monospace', fontSize: 11, width: 36, textAlign: 'right' }}>
+              {pct.toFixed(1)}%
+            </span>
+          </div>
+        );
+      },
+    },
     { title: 'Fluxos', dataIndex: 'flows' },
   ];
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Card, Table, Tag, Select, Button, Typography, Space, Spin } from 'antd';
+import { Card, Table, Tag, Select, Button, Typography, Space, Spin, Progress, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import Chart from 'react-apexcharts';
 import type { ApexOptions } from 'apexcharts';
@@ -100,6 +100,18 @@ export function InterfaceDetailPage() {
   const { iface, summary, timeseries, top_asns, top_protocols, top_ports, top_src, top_dst, active_blocks } = detail;
   const bucketSecs = bucketFor(rangeSeconds);
 
+  // ── Concentração de ASNs ──────────────────────────────────────────────────
+  const top3Bytes = top_asns.slice(0, 3).reduce((s, a) => s + a.bytes, 0);
+  const top3Pct   = summary.total_bytes > 0 ? (top3Bytes / summary.total_bytes * 100) : 0;
+
+  // ── Crescimento: 1ª metade vs 2ª metade do período ────────────────────────
+  const half = Math.floor(timeseries.length / 2);
+  const firstHalf  = timeseries.slice(0, half).reduce((s, p) => s + p.in_bytes + p.out_bytes, 0);
+  const secondHalf = timeseries.slice(half).reduce((s, p) => s + p.in_bytes + p.out_bytes, 0);
+  const growthPct  = half > 2 && firstHalf > 0
+    ? ((secondHalf - firstHalf) / firstHalf * 100)
+    : null;
+
   const labels  = timeseries.map(p => dayjs.unix(p.bucket).format('DD/MM HH:mm'));
   const inMbps  = timeseries.map(p => Number(((p.in_bytes ?? 0) * 8 / bucketSecs / 1_000_000).toFixed(3)));
   const outMbps = timeseries.map(p => Number(((p.out_bytes ?? 0) * 8 / bucketSecs / 1_000_000).toFixed(3)));
@@ -162,14 +174,29 @@ export function InterfaceDetailPage() {
   ];
 
   const asnCols: ColumnsType<{ asn: number; bytes: number; flows: number }> = [
-    { title: 'ASN', dataIndex: 'asn', render: v => (
+    { title: 'ASN', dataIndex: 'asn', render: (v: number) => (
       <Tag color="purple" style={{ fontFamily: 'monospace', cursor: 'pointer' }}
         onClick={() => navigate(`/asn/${v}`)}>AS{v}</Tag>
     )},
     { title: 'Bytes', dataIndex: 'bytes', align: 'right', sorter: (a, b) => a.bytes - b.bytes, defaultSortOrder: 'descend',
-      render: v => <Text style={{ color: '#00c8f0', fontFamily: 'monospace' }}>{formatBytes(v)}</Text> },
+      render: (v: number) => <Text style={{ color: '#00c8f0', fontFamily: 'monospace' }}>{formatBytes(v)}</Text> },
+    {
+      title: '% Link', dataIndex: 'bytes', key: 'pct', width: 130,
+      render: (v: number) => {
+        const pct = summary.total_bytes > 0 ? (v / summary.total_bytes * 100) : 0;
+        return (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Progress percent={parseFloat(pct.toFixed(1))} size="small" showInfo={false}
+              strokeColor="#8b5cf6" style={{ flex: 1, marginBottom: 0 }} />
+            <Text style={{ color: '#8b5cf6', fontFamily: 'monospace', fontSize: 11, width: 36, textAlign: 'right' }}>
+              {pct.toFixed(1)}%
+            </Text>
+          </div>
+        );
+      },
+    },
     { title: 'Fluxos', dataIndex: 'flows', align: 'right',
-      render: v => <Text style={{ color: '#94a3b8' }}>{v.toLocaleString('pt-BR')}</Text> },
+      render: (v: number) => <Text style={{ color: '#94a3b8' }}>{v.toLocaleString('pt-BR')}</Text> },
   ];
 
   const protoCols: ColumnsType<{ protocol: string; bytes: number; flows: number }> = [
@@ -277,12 +304,19 @@ export function InterfaceDetailPage() {
       {/* IN/OUT chart */}
       <Card
         title={
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
             <span style={{ color: '#94a3b8' }}>Banda IN/OUT</span>
             <span style={{ color: '#00c8f0', fontSize: 12 }}>■ IN (entrada)</span>
             <span style={{ color: '#f59e0b', fontSize: 12 }}>■ OUT (saída)</span>
             {capacityMbps > 0 && (
               <span style={{ color: '#ff3b3b', fontSize: 12 }}>— Capacidade ({fmtMbps(capacityMbps)})</span>
+            )}
+            {growthPct !== null && (
+              <Tooltip title={`Comparativo 1ª metade vs 2ª metade do período`}>
+                <Tag color={growthPct > 20 ? 'red' : growthPct > 5 ? 'orange' : growthPct < -5 ? 'green' : 'default'}>
+                  {growthPct >= 0 ? '↑' : '↓'} {Math.abs(growthPct).toFixed(1)}% no período
+                </Tag>
+              </Tooltip>
             )}
           </div>
         }
@@ -309,7 +343,17 @@ export function InterfaceDetailPage() {
 
       {/* Detail tables 2x2 */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
-        <Card title={<span style={{ color: '#94a3b8' }}>Top ASNs</span>}
+        <Card
+          title={
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ color: '#94a3b8' }}>Top ASNs</span>
+              <Tooltip title={`Top 3 ASNs respondem por ${top3Pct.toFixed(1)}% do tráfego desta interface`}>
+                <Tag color={top3Pct > 80 ? 'red' : top3Pct > 60 ? 'orange' : 'green'}>
+                  Conc. top3: {top3Pct.toFixed(1)}%
+                </Tag>
+              </Tooltip>
+            </div>
+          }
           style={{ background: '#0a1628', border: '1px solid #1e2d4a', borderRadius: 8 }}
           styles={{ body: { padding: 0 } }}>
           <Table columns={asnCols} dataSource={top_asns} rowKey="asn"

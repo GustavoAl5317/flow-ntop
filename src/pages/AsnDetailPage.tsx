@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Card, Table, Tag, Select, Button, Typography, Space, Spin } from 'antd';
+import { Card, Table, Tag, Select, Button, Typography, Space, Spin, Input, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import Chart from 'react-apexcharts';
 import type { ApexOptions } from 'apexcharts';
 import dayjs from 'dayjs';
-import { ArrowLeft, RefreshCw, Globe } from 'lucide-react';
+import { ArrowLeft, RefreshCw, Globe, TrendingUp, TrendingDown, GitCompare } from 'lucide-react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { getAsnDetail, type AsnDetail, type AsnTopInterface, type AsnTouchedBlock } from '../services/backendApi';
 
@@ -50,10 +50,15 @@ function bucketFor(range: number): number {
 export function AsnDetailPage() {
   const { asn } = useParams<{ asn: string }>();
   const navigate = useNavigate();
-  const [rangeSeconds, setRangeSeconds] = useState(6 * 3600);
-  const [detail, setDetail] = useState<AsnDetail | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [rangeSeconds, setRangeSeconds]   = useState(6 * 3600);
+  const [detail, setDetail]               = useState<AsnDetail | null>(null);
+  const [loading, setLoading]             = useState(false);
+  const [error, setError]                 = useState<string | null>(null);
+
+  // ── Compare ASN ──────────────────────────────────────────────────────────────
+  const [compareInput, setCompareInput]   = useState('');
+  const [compareDetail, setCompareDetail] = useState<AsnDetail | null>(null);
+  const [loadingCompare, setLoadingCompare] = useState(false);
 
   const load = useCallback(async () => {
     if (!asn) return;
@@ -73,6 +78,22 @@ export function AsnDetailPage() {
       setLoading(false);
     }
   }, [asn, rangeSeconds]);
+
+  const loadCompare = useCallback(async () => {
+    const asnNum = parseInt(compareInput.replace(/\D/g, ''), 10);
+    if (!asnNum || isNaN(asnNum)) { setCompareDetail(null); return; }
+    setLoadingCompare(true);
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const data = await getAsnDetail(asnNum, {
+        epoch_begin: now - rangeSeconds,
+        epoch_end: now,
+        bucket_seconds: bucketFor(rangeSeconds),
+      });
+      setCompareDetail(data);
+    } catch { setCompareDetail(null); }
+    finally { setLoadingCompare(false); }
+  }, [compareInput, rangeSeconds]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -99,9 +120,21 @@ export function AsnDetailPage() {
   const { summary, timeseries, top_src, top_dst, top_protocols, top_interfaces, touched_blocks } = detail;
   const bucketSecs = bucketFor(rangeSeconds);
 
+  // ── Growth: 1st half vs 2nd half ─────────────────────────────────────────────
+  const half       = Math.floor(timeseries.length / 2);
+  const firstHalf  = timeseries.slice(0, half).reduce((s, p) => s + p.in_bytes + p.out_bytes, 0);
+  const secondHalf = timeseries.slice(half).reduce((s, p) => s + p.in_bytes + p.out_bytes, 0);
+  const growthPct  = half > 2 && firstHalf > 0 ? ((secondHalf - firstHalf) / firstHalf * 100) : null;
+
+  // ── Chart data ────────────────────────────────────────────────────────────────
   const labels  = timeseries.map(p => dayjs.unix(p.bucket).format('DD/MM HH:mm'));
-  const inMbps  = timeseries.map(p => Number(((p.in_bytes ?? 0) * 8 / bucketSecs / 1_000_000).toFixed(3)));
+  const inMbps  = timeseries.map(p => Number(((p.in_bytes  ?? 0) * 8 / bucketSecs / 1_000_000).toFixed(3)));
   const outMbps = timeseries.map(p => Number(((p.out_bytes ?? 0) * 8 / bucketSecs / 1_000_000).toFixed(3)));
+
+  const compareAsnNum = compareDetail ? parseInt(compareInput.replace(/\D/g, ''), 10) : null;
+  const compareInMbps  = compareDetail?.timeseries.map(p => Number(((p.in_bytes  ?? 0) * 8 / bucketSecs / 1_000_000).toFixed(3))) ?? [];
+  const compareOutMbps = compareDetail?.timeseries.map(p => Number(((p.out_bytes ?? 0) * 8 / bucketSecs / 1_000_000).toFixed(3))) ?? [];
+  const hasCompare = compareDetail !== null && compareInMbps.length > 0;
 
   const chartOptions: ApexOptions = {
     chart: {
@@ -109,9 +142,13 @@ export function AsnDetailPage() {
       toolbar: { show: true, tools: { zoom: true, zoomin: true, zoomout: true, pan: true, reset: true, download: false } },
       animations: { enabled: false },
     },
-    colors: ['#00c8f0', '#f59e0b'],
-    fill: { type: 'gradient', gradient: { opacityFrom: 0.5, opacityTo: 0.05 } },
-    stroke: { curve: 'smooth', width: 2 },
+    colors: ['#00c8f0', '#f59e0b', '#00c8f055', '#f59e0b55'],
+    fill: { type: 'gradient', gradient: { opacityFrom: 0.4, opacityTo: 0.02 } },
+    stroke: {
+      curve: 'smooth',
+      width:     [2, 2, 1.5, 1.5],
+      dashArray: [0, 0,   6,    6],
+    },
     xaxis: {
       categories: labels,
       labels: { style: { colors: '#475569', fontSize: '10px' }, rotate: 0 },
@@ -129,6 +166,15 @@ export function AsnDetailPage() {
       }] : [],
     },
   };
+
+  const chartSeries = [
+    { name: `IN AS${asn}`,  data: inMbps  },
+    { name: `OUT AS${asn}`, data: outMbps },
+    ...(hasCompare ? [
+      { name: `IN AS${compareAsnNum}`,  data: compareInMbps  },
+      { name: `OUT AS${compareAsnNum}`, data: compareOutMbps },
+    ] : []),
+  ];
 
   const ipCols: ColumnsType<{ ip: string; bytes: number; flows: number }> = [
     { title: 'IP', dataIndex: 'ip', render: v => <Text style={{ fontFamily: 'monospace', color: '#e2e8f0', fontSize: 12 }}>{v}</Text> },
@@ -149,8 +195,7 @@ export function AsnDetailPage() {
 
   const ifaceCols: ColumnsType<AsnTopInterface> = [
     {
-      title: 'Interface',
-      key: 'name',
+      title: 'Interface', key: 'name',
       render: (_, r) => (
         <div style={{ cursor: 'pointer' }} onClick={() => navigate(`/interfaces/${r.id}`)}>
           <Text style={{ color: '#00c8f0', fontSize: 12 }}>{r.name}</Text>
@@ -173,8 +218,7 @@ export function AsnDetailPage() {
 
   const blockCols: ColumnsType<AsnTouchedBlock> = [
     {
-      title: 'Bloco',
-      key: 'block',
+      title: 'Bloco', key: 'block',
       render: (_, r) => (
         <div style={{ cursor: 'pointer' }} onClick={() => navigate(`/ip-blocks/${r.id}`)}>
           <Tag color="blue" style={{ fontFamily: 'monospace' }}>{r.cidr}</Tag>
@@ -201,19 +245,72 @@ export function AsnDetailPage() {
               <Globe size={18} style={{ color: '#f59e0b' }} />
             </div>
             <div>
-              <Title level={4} style={{ color: '#e2e8f0', margin: 0 }}>AS{asn}</Title>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Title level={4} style={{ color: '#e2e8f0', margin: 0 }}>AS{asn}</Title>
+                {growthPct !== null && (
+                  <Tooltip title="Crescimento: 1ª metade vs 2ª metade do período">
+                    <Tag color={growthPct > 20 ? 'red' : growthPct > 5 ? 'orange' : growthPct < -5 ? 'green' : 'default'}>
+                      {growthPct >= 0 ? <TrendingUp size={11} style={{ marginRight: 3 }} /> : <TrendingDown size={11} style={{ marginRight: 3 }} />}
+                      {growthPct >= 0 ? '+' : ''}{growthPct.toFixed(1)}%
+                    </Tag>
+                  </Tooltip>
+                )}
+              </div>
               <Text style={{ color: '#64748b', fontSize: 12 }}>Autonomous System</Text>
             </div>
           </div>
         </div>
         <Space>
-          <Select value={rangeSeconds} onChange={setRangeSeconds} options={RANGE_OPTIONS} style={{ width: 150 }} />
+          {/* Compare ASN input */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <GitCompare size={14} style={{ color: '#475569' }} />
+            <Input
+              placeholder="Comparar com AS..."
+              size="small"
+              value={compareInput}
+              onChange={e => setCompareInput(e.target.value)}
+              onPressEnter={loadCompare}
+              style={{ width: 150, background: '#0f1f3d', borderColor: '#1e2d4a', color: '#e2e8f0', fontSize: 12 }}
+            />
+            <Button size="small" onClick={loadCompare} loading={loadingCompare}
+              style={{ background: '#0f1f3d', borderColor: '#1e2d4a', color: '#94a3b8' }}>
+              OK
+            </Button>
+            {compareDetail && (
+              <Button size="small" onClick={() => { setCompareDetail(null); setCompareInput(''); }}
+                style={{ background: 'transparent', borderColor: '#334155', color: '#475569' }}>
+                ✕
+              </Button>
+            )}
+          </div>
+          <Select value={rangeSeconds} onChange={v => { setRangeSeconds(v); setCompareDetail(null); setCompareInput(''); }}
+            options={RANGE_OPTIONS} style={{ width: 150 }} />
           <Button icon={<RefreshCw size={14} />} onClick={load} loading={loading}
             style={{ background: '#0f1f3d', borderColor: '#1e2d4a', color: '#94a3b8' }}>
             Atualizar
           </Button>
         </Space>
       </div>
+
+      {/* Compare summary bar */}
+      {hasCompare && compareDetail && (
+        <div style={{
+          background: '#0a1628', border: '1px solid #8b5cf633', borderRadius: 8,
+          padding: '10px 16px', marginBottom: 14,
+          display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap',
+        }}>
+          <Text style={{ color: '#8b5cf6', fontSize: 13, fontWeight: 600 }}>Comparando AS{asn} vs AS{compareAsnNum}</Text>
+          <Text style={{ color: '#475569', fontSize: 12 }}>
+            AS{asn}: <strong style={{ color: '#00c8f0' }}>{formatBytes(summary.total_bytes)}</strong>
+          </Text>
+          <Text style={{ color: '#475569', fontSize: 12 }}>
+            AS{compareAsnNum}: <strong style={{ color: '#f59e0b' }}>{formatBytes(compareDetail.summary.total_bytes)}</strong>
+          </Text>
+          <Tag color={summary.total_bytes >= compareDetail.summary.total_bytes ? 'blue' : 'orange'}>
+            AS{summary.total_bytes >= compareDetail.summary.total_bytes ? asn : compareAsnNum} tem mais tráfego
+          </Tag>
+        </div>
+      )}
 
       {/* KPI cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10, marginBottom: 16 }}>
@@ -236,13 +333,14 @@ export function AsnDetailPage() {
         ))}
       </div>
 
-      {/* Timeseries */}
+      {/* Timeseries chart */}
       <Card
         title={
-          <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
             <span style={{ color: '#94a3b8' }}>Banda IN/OUT — AS{asn}</span>
-            <span style={{ color: '#00c8f0', fontSize: 12 }}>■ IN (para AS)</span>
-            <span style={{ color: '#f59e0b', fontSize: 12 }}>■ OUT (do AS)</span>
+            <span style={{ color: '#00c8f0', fontSize: 12 }}>■ IN</span>
+            <span style={{ color: '#f59e0b', fontSize: 12 }}>■ OUT</span>
+            {hasCompare && <span style={{ color: '#475569', fontSize: 11 }}>(linha tracejada = AS{compareAsnNum})</span>}
           </div>
         }
         style={{ background: '#0a1628', border: '1px solid #1e2d4a', borderRadius: 8, marginBottom: 16 }}
@@ -250,13 +348,10 @@ export function AsnDetailPage() {
       >
         {timeseries.length > 0 ? (
           <Chart
-            key={`asn-ts-${asn}-${timeseries.length}`}
+            key={`asn-ts-${asn}-${timeseries.length}-${hasCompare}`}
             type="area"
             options={chartOptions}
-            series={[
-              { name: 'IN (↓)', data: inMbps },
-              { name: 'OUT (↑)', data: outMbps },
-            ]}
+            series={chartSeries}
             height={220}
           />
         ) : (
@@ -291,7 +386,7 @@ export function AsnDetailPage() {
           styles={{ body: { padding: 0 } }}>
           <Table columns={ifaceCols} dataSource={top_interfaces} rowKey="id"
             pagination={false} size="small"
-            locale={{ emptyText: <Text style={{ color: '#334155' }}>Nenhuma interface registrada com este tráfego</Text> }}
+            locale={{ emptyText: <Text style={{ color: '#334155' }}>Nenhuma interface registrada</Text> }}
             style={{ background: 'transparent' }} />
         </Card>
 

@@ -70,6 +70,102 @@ def _migrate_events_table(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE events ADD COLUMN {col} {col_type}")
 
 
+# ─── CDN CIDR seeds ───────────────────────────────────────────────────────────
+# Well-known stable CDN provider ranges — seeded once into ip_blocks(type='CDN').
+# Users can add more via the IP Blocks UI.
+_CDN_SEEDS: list[tuple[str, str, str]] = [
+    # (cidr, label, category)
+    # Cloudflare — https://cloudflare.com/ips/
+    ("103.21.244.0/22",  "Cloudflare", "Cloudflare"),
+    ("103.22.200.0/22",  "Cloudflare", "Cloudflare"),
+    ("103.31.4.0/22",    "Cloudflare", "Cloudflare"),
+    ("104.16.0.0/13",    "Cloudflare", "Cloudflare"),
+    ("104.24.0.0/14",    "Cloudflare", "Cloudflare"),
+    ("108.162.192.0/18", "Cloudflare", "Cloudflare"),
+    ("131.0.72.0/22",    "Cloudflare", "Cloudflare"),
+    ("141.101.64.0/18",  "Cloudflare", "Cloudflare"),
+    ("162.158.0.0/15",   "Cloudflare", "Cloudflare"),
+    ("172.64.0.0/13",    "Cloudflare", "Cloudflare"),
+    ("173.245.48.0/20",  "Cloudflare", "Cloudflare"),
+    ("188.114.96.0/20",  "Cloudflare", "Cloudflare"),
+    ("190.93.240.0/20",  "Cloudflare", "Cloudflare"),
+    ("197.234.240.0/22", "Cloudflare", "Cloudflare"),
+    ("198.41.128.0/17",  "Cloudflare", "Cloudflare"),
+    # Google (GGC / YouTube CDN)
+    ("8.8.4.0/24",       "Google",     "Google"),
+    ("8.8.8.0/24",       "Google",     "Google"),
+    ("64.233.160.0/19",  "Google",     "Google"),
+    ("66.102.0.0/20",    "Google",     "Google"),
+    ("66.249.64.0/19",   "Google",     "Google"),
+    ("72.14.192.0/18",   "Google",     "Google"),
+    ("74.125.0.0/16",    "Google",     "Google"),
+    ("108.177.8.0/21",   "Google",     "Google"),
+    ("142.250.0.0/15",   "Google",     "Google"),
+    ("172.217.0.0/16",   "Google",     "Google"),
+    ("173.194.0.0/16",   "Google",     "Google"),
+    ("209.85.128.0/17",  "Google",     "Google"),
+    ("216.58.192.0/19",  "Google",     "Google"),
+    ("216.239.32.0/19",  "Google",     "Google"),
+    # Amazon CloudFront — https://ip-ranges.amazonaws.com/ip-ranges.json (service=CLOUDFRONT)
+    ("13.32.0.0/15",     "Amazon CloudFront", "Amazon"),
+    ("13.35.0.0/16",     "Amazon CloudFront", "Amazon"),
+    ("52.84.0.0/15",     "Amazon CloudFront", "Amazon"),
+    ("54.182.0.0/16",    "Amazon CloudFront", "Amazon"),
+    ("54.192.0.0/16",    "Amazon CloudFront", "Amazon"),
+    ("54.230.0.0/16",    "Amazon CloudFront", "Amazon"),
+    ("64.252.64.0/18",   "Amazon CloudFront", "Amazon"),
+    ("70.132.0.0/18",    "Amazon CloudFront", "Amazon"),
+    ("99.84.0.0/16",     "Amazon CloudFront", "Amazon"),
+    ("143.204.0.0/16",   "Amazon CloudFront", "Amazon"),
+    ("205.251.192.0/19", "Amazon CloudFront", "Amazon"),
+    ("216.137.32.0/19",  "Amazon CloudFront", "Amazon"),
+    # Fastly — https://api.fastly.com/public-ip-list
+    ("23.235.32.0/20",   "Fastly",     "Fastly"),
+    ("43.249.72.0/22",   "Fastly",     "Fastly"),
+    ("103.244.50.0/24",  "Fastly",     "Fastly"),
+    ("103.245.222.0/23", "Fastly",     "Fastly"),
+    ("103.245.224.0/24", "Fastly",     "Fastly"),
+    ("104.156.80.0/20",  "Fastly",     "Fastly"),
+    ("151.101.0.0/16",   "Fastly",     "Fastly"),
+    ("157.52.64.0/18",   "Fastly",     "Fastly"),
+    ("172.111.64.0/18",  "Fastly",     "Fastly"),
+    ("185.31.16.0/22",   "Fastly",     "Fastly"),
+    ("199.27.72.0/21",   "Fastly",     "Fastly"),
+    ("199.232.0.0/16",   "Fastly",     "Fastly"),
+    # Akamai (selected stable ranges from ARIN/whois)
+    ("23.64.0.0/14",     "Akamai",     "Akamai"),
+    ("23.72.0.0/13",     "Akamai",     "Akamai"),
+    ("72.246.0.0/15",    "Akamai",     "Akamai"),
+    ("92.122.0.0/15",    "Akamai",     "Akamai"),
+    ("95.100.0.0/15",    "Akamai",     "Akamai"),
+    ("96.6.0.0/15",      "Akamai",     "Akamai"),
+    ("96.16.0.0/15",     "Akamai",     "Akamai"),
+]
+
+
+def seed_cdn_blocks(conn) -> int:
+    """Insert CDN CIDRs into ip_blocks (skips existing CIDRs). Returns count inserted."""
+    inserted = 0
+    cur = conn.cursor()
+    for cidr, label, category in _CDN_SEEDS:
+        cur.execute("SELECT 1 FROM ip_blocks WHERE cidr = ?", (cidr,))
+        if cur.fetchone():
+            continue
+        net = ipaddress.IPv4Network(cidr, strict=False)
+        network_int   = int(net.network_address)
+        broadcast_int = int(net.broadcast_address)
+        now = datetime.now(timezone.utc).isoformat()
+        cur.execute(
+            """INSERT INTO ip_blocks
+               (cidr, label, type, category, active, network_int, broadcast_int, created_at)
+               VALUES (?, ?, 'CDN', ?, 1, ?, ?, ?)""",
+            (cidr, label, category, network_int, broadcast_int, now),
+        )
+        inserted += 1
+    conn.commit()
+    return inserted
+
+
 def init_db() -> None:
     with get_db() as conn:
         conn.executescript("""
@@ -152,6 +248,7 @@ def init_db() -> None:
         _migrate_events_table(conn)
         _migrate_ip_blocks_table(conn)
         _migrate_interfaces_table(conn)
+        seed_cdn_blocks(conn)
 
 
 def normalize_netflow_event(ev: dict) -> dict:

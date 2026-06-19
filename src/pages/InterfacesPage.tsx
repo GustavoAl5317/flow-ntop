@@ -4,6 +4,8 @@ import type { ColumnsType } from 'antd/es/table';
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import { RefreshCw, Zap, ExternalLink } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import Chart from 'react-apexcharts';
+import type { ApexOptions } from 'apexcharts';
 import {
   getInterfaces,
   createInterface,
@@ -395,6 +397,56 @@ export function InterfacesPage() {
           style={{ background: 'transparent' }}
         />
       </Card>
+
+      {/* Comparativo entre interfaces */}
+      {ranking.length > 1 && (() => {
+        const shown = ranking.slice(0, 12);
+        const fmtB = (b: number) => {
+          if (b >= 1e12) return parseFloat((b / 1e12).toFixed(2));
+          if (b >= 1e9)  return parseFloat((b / 1e9).toFixed(2));
+          if (b >= 1e6)  return parseFloat((b / 1e6).toFixed(2));
+          return parseFloat((b / 1e3).toFixed(2));
+        };
+        const unitLabel = (() => {
+          const maxB = Math.max(...shown.map(r => Math.max(r.in_bytes, r.out_bytes)));
+          if (maxB >= 1e12) return 'TB';
+          if (maxB >= 1e9)  return 'GB';
+          if (maxB >= 1e6)  return 'MB';
+          return 'KB';
+        })();
+        const comparativoOptions: ApexOptions = {
+          chart: { type: 'bar', background: 'transparent', toolbar: { show: false }, animations: { enabled: false } },
+          theme: { mode: 'dark' },
+          plotOptions: { bar: { horizontal: true, dataLabels: { position: 'top' }, borderRadius: 3 } },
+          colors: ['#00c8f0', '#f59e0b'],
+          xaxis: {
+            categories: shown.map(r => r.name),
+            labels: { style: { colors: '#475569', fontSize: '11px' }, formatter: (v) => `${v} ${unitLabel}` },
+          },
+          yaxis: { labels: { style: { colors: '#94a3b8', fontSize: '11px' } } },
+          grid: { borderColor: '#1e2d4a' },
+          legend: { labels: { colors: '#94a3b8' } },
+          dataLabels: { enabled: false },
+          tooltip: { theme: 'dark', y: { formatter: (v) => `${v} ${unitLabel}` } },
+        };
+        return (
+          <Card
+            title={<Text style={{ color: '#94a3b8' }}>Comparativo IN vs OUT por Interface</Text>}
+            style={{ background: '#0a1628', border: '1px solid #1e2d4a', borderRadius: 8, marginBottom: 16 }}
+            styles={{ body: { padding: '8px 12px' } }}
+          >
+            <Chart
+              type="bar"
+              options={comparativoOptions}
+              series={[
+                { name: 'IN (↓)', data: shown.map(r => fmtB(r.in_bytes)) },
+                { name: 'OUT (↑)', data: shown.map(r => fmtB(r.out_bytes)) },
+              ]}
+              height={Math.max(180, shown.length * 32)}
+            />
+          </Card>
+        );
+      })()}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         {/* Discovered interfaces */}
