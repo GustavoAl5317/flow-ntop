@@ -18,6 +18,7 @@ import { InterfacesPage }       from './pages/InterfacesPage';
 import { InterfaceDetailPage }  from './pages/InterfaceDetailPage';
 import { AsnDetailPage }        from './pages/AsnDetailPage';
 import { CorrelationPage }  from './pages/CorrelationPage';
+import { NetworkQueryPage } from './pages/NetworkQueryPage';
 import { ExecutivePage }    from './pages/ExecutivePage';
 import { LoginPage }        from './pages/LoginPage';
 import { useDashboardData } from './hooks/useDashboardData';
@@ -59,6 +60,7 @@ function AppLayout() {
           <Route path="/interfaces/:id"  element={<InterfaceDetailPage />} />
           <Route path="/asn/:asn"        element={<AsnDetailPage />} />
           <Route path="/correlacao"  element={<CorrelationPage />} />
+          <Route path="/consultas"   element={<NetworkQueryPage />} />
           <Route path="/executivo"   element={<ExecutivePage />} />
         </Routes>
       </div>

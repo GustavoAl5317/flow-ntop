@@ -20,6 +20,7 @@ import {
   getNetflowProtocolTimeseries,
   getNetflowAsnTimeseries,
   getNetflowPortTimeseries,
+  getIpBlocksRanking,
   resolveIpsToBlocks,
   type NetflowSummary,
   type NetflowTopTalker,
@@ -33,6 +34,7 @@ import {
   type NetflowProtoTimeseriesResult,
   type NetflowAsnTimeseriesResult,
   type NetflowPortTimeseriesResult,
+  type IpBlockRankingEntry,
 } from '../services/backendApi';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -534,7 +536,30 @@ function NetflowTimeseriesChart({
 
 function ProtocolsWithBar({ data, loading }: { data: NetflowProtocol[]; loading: boolean }) {
   const total = data.reduce((s, r) => s + (r.total_bytes ?? 0), 0);
+
+  // Identificação automática do protocolo dominante
+  const sorted = [...data].sort((a, b) => (b.total_bytes ?? 0) - (a.total_bytes ?? 0));
+  const top = sorted[0];
+  const topPct = top && total > 0 ? (top.total_bytes / total) * 100 : 0;
+  const dominant = topPct >= 50;
+
   return (
+    <>
+      {top && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, padding: '6px 10px',
+          background: dominant ? 'rgba(245,158,11,0.12)' : '#060d1f',
+          border: `1px solid ${dominant ? '#f59e0b' : '#1e2d4a'}`, borderRadius: 6,
+        }}>
+          <span style={{ fontSize: 16 }}>{dominant ? '⚠️' : '📊'}</span>
+          <span style={{ color: dominant ? '#f59e0b' : '#94a3b8', fontSize: 12 }}>
+            {dominant ? 'Protocolo dominante' : 'Protocolo principal'}:{' '}
+            <strong style={{ color: '#e2e8f0' }}>{top.protocol}</strong>{' '}
+            ({topPct.toFixed(1)}% do tráfego)
+            {dominant && <span style={{ color: '#64748b' }}> — concentração elevada</span>}
+          </span>
+        </div>
+      )}
     <Table<NetflowProtocol>
       size="small" rowKey="protocol" loading={loading} pagination={false}
       dataSource={data} locale={{ emptyText: 'Sem dados' }}
@@ -560,6 +585,7 @@ function ProtocolsWithBar({ data, loading }: { data: NetflowProtocol[]; loading:
         },
       ]}
     />
+    </>
   );
 }
 
@@ -581,6 +607,8 @@ export function NetflowPage() {
   const [summary, setSummary]             = useState<NetflowSummary | null>(null);
   const [topTalkersSrc, setTopTalkersSrc] = useState<NetflowTopTalker[]>([]);
   const [topTalkersDst, setTopTalkersDst] = useState<NetflowTopTalker[]>([]);
+  const [talkerGroup, setTalkerGroup]     = useState<'ip' | 'cliente' | 'bloco' | 'asn'>('ip');
+  const [blockRanking, setBlockRanking]   = useState<IpBlockRankingEntry[]>([]);
   const [ipBlockMap, setIpBlockMap]       = useState<Record<string, { id: number; cidr: string; label: string; type: string | null }>>({});
   const [topPorts, setTopPorts]           = useState<NetflowTopPort[]>([]);
   const [portType, setPortType]           = useState<'src' | 'dst'>('dst');
@@ -631,9 +659,10 @@ export function NetflowPage() {
       getNetflowPortTimeseries({ epoch_begin, epoch_end, bucket_seconds }),     // 12
       getNetflowTimeseries({ epoch_begin: prevBegin, epoch_end: prevEnd, bucket_seconds }), // 13 prev period
       getNetflowTopFlows({ ...limited }),                       // 14
+      getIpBlocksRanking({ epoch_begin, epoch_end }),           // 15 (agrupamento por bloco/cliente)
     ]);
 
-    const [r0,r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11,r12,r13,r14] = results;
+    const [r0,r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11,r12,r13,r14,r15] = results;
     if (r0.status === 'fulfilled')  setSummary(r0.value);                else setSummary(null);
     const srcRecords = r1.status === 'fulfilled' ? r1.value.records : [];
     const dstRecords = r2.status === 'fulfilled' ? r2.value.records : [];
@@ -655,6 +684,7 @@ export function NetflowPage() {
     if (r12.status === 'fulfilled') setPortTs(r12.value);               else setPortTs({ ports: [], series: [] });
     if (r13.status === 'fulfilled') setPrevTimeseries(r13.value.records); else setPrevTimeseries([]);
     if (r14.status === 'fulfilled') setTopFlows(r14.value.records);      else setTopFlows([]);
+    if (r15.status === 'fulfilled') setBlockRanking(r15.value.ranking);  else setBlockRanking([]);
 
     if (results.every(r => r.status === 'rejected')) {
       setError('Não foi possível carregar dados de NetFlow. Verifique a conexão com o backend.');
@@ -833,8 +863,91 @@ export function NetflowPage() {
           onAsnClick={asnNum => navigate(`/asn/${asnNum}`)} />
       </div>
 
+      {/* ─── Agrupamento de Top Talkers ──────────────────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: -4 }}>
+        <span style={{ color: '#64748b', fontSize: 12 }}>Agrupar Top Talkers por:</span>
+        <Space size={4}>
+          {([
+            { k: 'ip',      label: 'IP' },
+            { k: 'cliente', label: 'Cliente' },
+            { k: 'bloco',   label: 'Bloco IP' },
+            { k: 'asn',     label: 'ASN' },
+          ] as const).map(({ k, label }) => (
+            <Button key={k} size="small"
+              type={talkerGroup === k ? 'primary' : 'default'}
+              onClick={() => setTalkerGroup(k)}
+              style={{ fontSize: 11, padding: '0 10px', height: 24, ...(talkerGroup !== k ? { background: '#0f1f3d', borderColor: '#1e2d4a', color: '#64748b' } : {}) }}>
+              {label}
+            </Button>
+          ))}
+        </Space>
+      </div>
+
+      {/* ─── Top Talkers agrupados (cliente / bloco / ASN) ───────────────── */}
+      {talkerGroup !== 'ip' && (() => {
+        type Row = { key: string; nome: string; sub?: string; bytes: number; id?: number; asn?: number };
+        let rows: Row[] = [];
+        if (talkerGroup === 'bloco') {
+          rows = blockRanking.map(b => ({
+            key: `b${b.id}`, nome: b.label, sub: `${b.cidr}${b.customer ? ` · ${b.customer}` : ''}`,
+            bytes: b.total_bytes, id: b.id,
+          }));
+        } else if (talkerGroup === 'cliente') {
+          const agg: Record<string, number> = {};
+          blockRanking.forEach(b => {
+            const c = b.customer || 'Sem cliente associado';
+            agg[c] = (agg[c] ?? 0) + b.total_bytes;
+          });
+          rows = Object.entries(agg).map(([nome, bytes]) => ({ key: `c${nome}`, nome, bytes }));
+        } else if (talkerGroup === 'asn') {
+          const agg: Record<number, number> = {};
+          [...topAsnSrc, ...topAsnDst].forEach(a => { agg[a.asn] = (agg[a.asn] ?? 0) + a.total_bytes; });
+          rows = Object.entries(agg).map(([asn, bytes]) => ({ key: `a${asn}`, nome: `AS${asn}`, bytes, asn: Number(asn) }));
+        }
+        rows.sort((a, b) => b.bytes - a.bytes);
+        const total = rows.reduce((s, r) => s + r.bytes, 0);
+        const top = rows.slice(0, 20);
+        const groupLabel = talkerGroup === 'cliente' ? 'Cliente' : talkerGroup === 'bloco' ? 'Bloco IP' : 'ASN';
+        return (
+          <Card title={<span style={{ color: '#94a3b8' }}>Top Talkers por {groupLabel}</span>}
+            style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 8 } }}>
+            <Table
+              size="small" rowKey="key" loading={loading} pagination={{ pageSize: 10 }}
+              dataSource={top} locale={{ emptyText: talkerGroup === 'asn' ? 'Sem dados de ASN' : 'Nenhum bloco IP cadastrado para agrupar' }}
+              onRow={r => ({
+                style: { cursor: (r.id || r.asn) ? 'pointer' : 'default' },
+                onClick: () => { if (r.id) navigate(`/ip-blocks/${r.id}`); else if (r.asn) navigate(`/asn/${r.asn}`); },
+              })}
+              columns={[
+                { title: groupLabel, key: 'nome', render: (_, r: Row) => (
+                  <div>
+                    <span style={{ color: '#00c8f0', fontWeight: 600 }}>{r.nome}</span>
+                    {r.sub && <span style={{ display: 'block', color: '#475569', fontSize: 11, fontFamily: 'monospace' }}>{r.sub}</span>}
+                  </div>
+                ) },
+                { title: 'Volume', dataIndex: 'bytes', width: 120,
+                  sorter: (a: Row, b: Row) => a.bytes - b.bytes, defaultSortOrder: 'descend',
+                  render: (v: number) => <strong style={{ fontFamily: 'monospace' }}>{formatBytes(v)}</strong> },
+                { title: '%', key: 'pct', width: 130, render: (_, r: Row) => {
+                  const pct = total > 0 ? (r.bytes / total * 100) : 0;
+                  return (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div style={{ flex: 1, height: 6, background: '#1e2d4a', borderRadius: 3 }}>
+                        <div style={{ width: `${pct.toFixed(1)}%`, height: '100%', background: '#00c8f0', borderRadius: 3 }} />
+                      </div>
+                      <span style={{ fontSize: 10, color: '#64748b', width: 34, textAlign: 'right' }}>{pct.toFixed(1)}%</span>
+                    </div>
+                  );
+                } },
+              ]}
+            />
+          </Card>
+        );
+      })()}
+
       {/* ─── Top Talkers / Portas / Protocolos / ASN ─────────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+        {talkerGroup === 'ip' && (
         <Card title={<span style={{ color: '#94a3b8' }}>Top Origens — clique ▶ para histórico</span>}
           style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 8 } }}>
           <Table<NetflowTopTalker>
@@ -843,7 +956,9 @@ export function NetflowPage() {
             expandable={expandable}
             locale={{ emptyText: 'Sem dados' }} />
         </Card>
+        )}
 
+        {talkerGroup === 'ip' && (
         <Card title={<span style={{ color: '#94a3b8' }}>Top Destinos — clique ▶ para histórico</span>}
           style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 8 } }}>
           <Table<NetflowTopTalker>
@@ -852,6 +967,7 @@ export function NetflowPage() {
             expandable={expandable}
             locale={{ emptyText: 'Sem dados' }} />
         </Card>
+        )}
 
         <Card
           title={
