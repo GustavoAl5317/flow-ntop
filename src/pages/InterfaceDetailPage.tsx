@@ -47,6 +47,35 @@ function bucketFor(range: number): number {
   return 3600 * 2;
 }
 
+function DailyHistoryChart({ data }: { data: Array<{ day: number; in_bytes: number; out_bytes: number; flows: number }> }) {
+  const labels = data.map(d => dayjs.unix(d.day).format('DD/MM'));
+  const inGb   = data.map(d => Number((d.in_bytes / 1e9).toFixed(2)));
+  const outGb  = data.map(d => Number((d.out_bytes / 1e9).toFixed(2)));
+
+  const options: ApexOptions = {
+    chart: { background: 'transparent', type: 'bar', stacked: false, toolbar: { show: false }, animations: { enabled: false } },
+    colors: ['#00c8f0', '#f59e0b'],
+    plotOptions: { bar: { columnWidth: '55%', borderRadius: 3 } },
+    xaxis: { categories: labels, labels: { style: { colors: '#475569', fontSize: '10px' } } },
+    yaxis: { labels: { style: { colors: '#475569', fontSize: '11px' }, formatter: v => `${v.toFixed(0)} GB` } },
+    grid: { borderColor: '#1e2d4a', strokeDashArray: 4 },
+    tooltip: { theme: 'dark', y: { formatter: v => `${v.toFixed(2)} GB` } },
+    legend: { labels: { colors: '#94a3b8' }, fontSize: '12px' },
+    dataLabels: { enabled: false },
+  };
+
+  return (
+    <Card title={<span style={{ color: '#94a3b8' }}>Histórico de Utilização Diária</span>}
+      style={{ background: '#0a1628', border: '1px solid #1e2d4a', borderRadius: 8 }}
+      styles={{ body: { padding: 12 } }}>
+      <Chart
+        options={options}
+        series={[{ name: 'Download (IN)', data: inGb }, { name: 'Upload (OUT)', data: outGb }]}
+        type="bar" height={240} />
+    </Card>
+  );
+}
+
 export function InterfaceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -97,8 +126,14 @@ export function InterfaceDetailPage() {
     );
   }
 
-  const { iface, summary, timeseries, top_asns, top_protocols, top_ports, top_src, top_dst, active_blocks } = detail;
+  const { iface, summary, timeseries, top_asns, top_protocols, top_ports, top_src, top_dst, active_blocks, cdn_distribution, daily_history } = detail;
   const bucketSecs = bucketFor(rangeSeconds);
+
+  // ── Distribuição IP x CDN ─────────────────────────────────────────────────
+  const cdnBytes    = cdn_distribution?.cdn_bytes ?? 0;
+  const nonCdnBytes = cdn_distribution?.noncdn_bytes ?? 0;
+  const cdnTotal    = cdnBytes + nonCdnBytes;
+  const cdnPct      = cdnTotal > 0 ? (cdnBytes / cdnTotal * 100) : 0;
 
   // ── Concentração de ASNs ──────────────────────────────────────────────────
   const top3Bytes = top_asns.slice(0, 3).reduce((s, a) => s + a.bytes, 0);
@@ -400,40 +435,57 @@ export function InterfaceDetailPage() {
           style={{ background: 'transparent' }} />
       </Card>
 
-      {/* Distribuição de blocos IP por tipo (CDN, Transit, etc.) ─────────── */}
-      {active_blocks && active_blocks.length > 0 && (() => {
-        const totalIps = active_blocks.reduce((s, b) => s + b.ip_count, 0);
-        const byType: Record<string, { blocks: number; ips: number }> = {};
-        active_blocks.forEach(b => {
-          const t = b.type || 'Outros';
-          if (!byType[t]) byType[t] = { blocks: 0, ips: 0 };
-          byType[t].blocks += 1;
-          byType[t].ips += b.ip_count;
-        });
-        const sorted = Object.entries(byType).sort((a, b) => b[1].ips - a[1].ips);
-        return (
-          <Card title={<span style={{ color: '#94a3b8' }}>Distribuição por tipo de bloco IP</span>}
-            style={{ background: '#0a1628', border: '1px solid #1e2d4a', borderRadius: 8 }}
-            styles={{ body: { padding: 16 } }}>
-            {sorted.map(([type, stats]) => {
-              const pct = totalIps > 0 ? (stats.ips / totalIps * 100) : 0;
-              return (
-                <div key={type} style={{ marginBottom: 10 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <Tag color={LINK_TYPE_COLORS[type] ?? 'default'} style={{ margin: 0 }}>{type}</Tag>
-                    <span style={{ color: '#94a3b8', fontSize: 12 }}>
-                      {stats.blocks} bloco{stats.blocks !== 1 ? 's' : ''} · {stats.ips} IPs · {pct.toFixed(1)}%
-                    </span>
+      {/* Distribuição IP x CDN (tráfego para/de provedores CDN conhecidos) ── */}
+      {cdnTotal > 0 && (
+        <Card title={<span style={{ color: '#94a3b8' }}>Distribuição IP × CDN</span>}
+          style={{ background: '#0a1628', border: '1px solid #1e2d4a', borderRadius: 8 }}
+          styles={{ body: { padding: 16 } }}>
+          <div style={{ display: 'flex', gap: 24, marginBottom: 14 }}>
+            <div>
+              <Text style={{ color: '#475569', fontSize: 11, display: 'block' }}>TRÁFEGO CDN</Text>
+              <Text style={{ color: '#00c8f0', fontSize: 18, fontFamily: 'monospace', fontWeight: 700 }}>
+                {cdnPct.toFixed(1)}%
+              </Text>
+              <Text style={{ color: '#64748b', fontSize: 11, display: 'block' }}>{formatBytes(cdnBytes)}</Text>
+            </div>
+            <div>
+              <Text style={{ color: '#475569', fontSize: 11, display: 'block' }}>IP COMUM</Text>
+              <Text style={{ color: '#8b5cf6', fontSize: 18, fontFamily: 'monospace', fontWeight: 700 }}>
+                {(100 - cdnPct).toFixed(1)}%
+              </Text>
+              <Text style={{ color: '#64748b', fontSize: 11, display: 'block' }}>{formatBytes(nonCdnBytes)}</Text>
+            </div>
+          </div>
+          <div style={{ background: '#1e2d4a', borderRadius: 4, height: 10, display: 'flex', overflow: 'hidden', marginBottom: 16 }}>
+            <div style={{ background: '#00c8f0', width: `${cdnPct}%`, height: 10, transition: 'width .4s' }} />
+            <div style={{ background: '#8b5cf6', width: `${100 - cdnPct}%`, height: 10, transition: 'width .4s' }} />
+          </div>
+          {cdn_distribution.providers.length > 0 && (
+            <>
+              <Text style={{ color: '#475569', fontSize: 11, display: 'block', marginBottom: 8 }}>TOP PROVEDORES CDN</Text>
+              {cdn_distribution.providers.map(p => {
+                const pPct = cdnBytes > 0 ? (p.bytes / cdnBytes * 100) : 0;
+                return (
+                  <div key={p.provider} style={{ marginBottom: 8 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                      <span style={{ color: '#e2e8f0', fontSize: 12 }}>{p.provider}</span>
+                      <span style={{ color: '#94a3b8', fontSize: 12 }}>{formatBytes(p.bytes)} · {pPct.toFixed(1)}%</span>
+                    </div>
+                    <div style={{ background: '#1e2d4a', borderRadius: 4, height: 5 }}>
+                      <div style={{ background: '#00c8f0', width: `${pPct}%`, height: 5, borderRadius: 4 }} />
+                    </div>
                   </div>
-                  <div style={{ background: '#1e2d4a', borderRadius: 4, height: 6 }}>
-                    <div style={{ background: '#00c8f0', width: `${pct}%`, height: 6, borderRadius: 4, transition: 'width .4s' }} />
-                  </div>
-                </div>
-              );
-            })}
-          </Card>
-        );
-      })()}
+                );
+              })}
+            </>
+          )}
+        </Card>
+      )}
+
+      {/* Histórico de utilização diária ─────────────────────────────────── */}
+      {daily_history && daily_history.length > 0 && (
+        <DailyHistoryChart data={daily_history} />
+      )}
 
       {/* Blocos IP ativos nesta interface */}
       {active_blocks && active_blocks.length > 0 && (

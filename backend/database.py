@@ -547,6 +547,79 @@ def _nf_filters(
         params.append(dst_ip)
 
 
+def _cdn_distribution(conn, where: str, params: list, peer_ip_expr: str) -> dict:
+    """Split traffic by whether the peer (remote) IP falls inside a seeded CDN block.
+
+    ``peer_ip_expr`` must be a SQL expression resolving to the integer form of the
+    remote IP for each flow (e.g. ``CASE WHEN ... THEN ip_to_int(src_ip) ELSE ...``).
+    Returns total CDN vs non-CDN bytes plus the top CDN providers by volume.
+    """
+    n = conn.execute("SELECT COUNT(*) AS n FROM ip_blocks WHERE type = 'CDN'").fetchone()
+    if not n or n["n"] == 0:
+        return {"cdn_bytes": 0, "noncdn_bytes": 0, "providers": []}
+
+    cdn_cond = (
+        f"EXISTS (SELECT 1 FROM ip_blocks cb WHERE cb.type = 'CDN' "
+        f"AND ({peer_ip_expr}) BETWEEN cb.network_int AND cb.broadcast_int)"
+    )
+    row = conn.execute(
+        f"""SELECT
+              COALESCE(SUM(CASE WHEN {cdn_cond} THEN bytes ELSE 0 END), 0) AS cdn_bytes,
+              COALESCE(SUM(CASE WHEN {cdn_cond} THEN 0 ELSE bytes END), 0) AS noncdn_bytes
+            FROM events WHERE {where}""",
+        params,
+    ).fetchone()
+
+    prov_rows = conn.execute(
+        f"""SELECT cb.label AS provider,
+                   COALESCE(SUM(events.bytes), 0) AS bytes,
+                   COUNT(*) AS flows
+            FROM events JOIN ip_blocks cb
+              ON cb.type = 'CDN'
+             AND ({peer_ip_expr}) BETWEEN cb.network_int AND cb.broadcast_int
+            WHERE {where}
+            GROUP BY cb.id ORDER BY bytes DESC LIMIT 8""",
+        params,
+    ).fetchall()
+
+    return {
+        "cdn_bytes":    row["cdn_bytes"] or 0,
+        "noncdn_bytes": row["noncdn_bytes"] or 0,
+        "providers":    [dict(r) for r in prov_rows],
+    }
+
+
+def netflow_top_flows(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    limit: int = 20,
+    protocol: str | None = None,
+    ip_version: str | None = None,
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
+) -> list[dict]:
+    """Top individual flows (5-tuple conversations) ranked by total bytes."""
+    clauses: list[str] = ["src_ip IS NOT NULL", "dst_ip IS NOT NULL"]
+    params: list = []
+    _nf_filters(clauses, params, epoch_begin, epoch_end, protocol, ip_version, asn, src_ip, dst_ip)
+    where = " AND ".join(clauses)
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT src_ip, dst_ip, src_port, dst_port, protocol,
+                       src_as, dst_as,
+                       COALESCE(SUM(bytes), 0) AS bytes,
+                       COALESCE(SUM(packets), 0) AS packets,
+                       COUNT(*) AS flows
+                FROM events WHERE {where}
+                GROUP BY src_ip, dst_ip, src_port, dst_port, protocol
+                ORDER BY bytes DESC LIMIT ?""",
+            [*params, limit],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def netflow_summary(
     epoch_begin: int | None = None,
     epoch_end: int | None = None,
@@ -1228,6 +1301,10 @@ def ip_block_detail(
             ep,
         ).fetchall()
 
+        # Distribuição IP x CDN: peer = lado oposto ao bloco
+        peer_expr = f"CASE WHEN {in_cond} THEN ip_to_int(src_ip) ELSE ip_to_int(dst_ip) END"
+        cdn_dist = _cdn_distribution(conn, f"{ew} AND {block_cond}", ep, peer_expr)
+
     total_bytes = summ["total_bytes"] or 0
     ts_list = [dict(r) for r in ts_rows]
     bucket_bytes = [r["in_bytes"] + r["out_bytes"] for r in ts_list]
@@ -1254,6 +1331,7 @@ def ip_block_detail(
         "top_src":           [dict(r) for r in src_rows],
         "top_dst":           [dict(r) for r in dst_rows],
         "active_interfaces": [dict(r) for r in iface_rows],
+        "cdn_distribution":  cdn_dist,
     }
 
 
@@ -1509,6 +1587,21 @@ def interface_detail(
             ep,
         ).fetchall()
 
+        # Histórico de utilização diária (in/out bytes por dia)
+        daily_rows = conn.execute(
+            f"""SELECT (tstamp / 86400) * 86400 AS day,
+                       COALESCE(SUM(CASE WHEN {in_cond}  THEN bytes ELSE 0 END), 0) AS in_bytes,
+                       COALESCE(SUM(CASE WHEN {out_cond} THEN bytes ELSE 0 END), 0) AS out_bytes,
+                       COUNT(*) AS flows
+                FROM events WHERE {ew} AND {iface_cond}
+                GROUP BY day ORDER BY day ASC""",
+            ep,
+        ).fetchall()
+
+        # Distribuição IP x CDN: peer = lado remoto da interface
+        peer_expr = f"CASE WHEN {in_cond} THEN ip_to_int(src_ip) ELSE ip_to_int(dst_ip) END"
+        cdn_dist = _cdn_distribution(conn, f"{ew} AND {iface_cond}", ep, peer_expr)
+
         # Load all blocks for Python-side IP → block lookup
         all_blocks = conn.execute("SELECT * FROM ip_blocks ORDER BY label").fetchall()
 
@@ -1559,6 +1652,8 @@ def interface_detail(
         "top_src":       [dict(r) for r in src_rows],
         "top_dst":       [dict(r) for r in dst_rows],
         "active_blocks": active_blocks,
+        "daily_history":    [dict(r) for r in daily_rows],
+        "cdn_distribution": cdn_dist,
     }
 
 

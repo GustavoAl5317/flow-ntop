@@ -206,6 +206,19 @@ export interface NetflowBandwidthClient {
   warning: number;
 }
 
+export interface NetflowTopFlow {
+  src_ip: string;
+  dst_ip: string;
+  src_port: number | null;
+  dst_port: number | null;
+  protocol: string | null;
+  src_as: number | null;
+  dst_as: number | null;
+  bytes: number;
+  packets: number;
+  flows: number;
+}
+
 export interface NetflowTimeseriesPoint {
   bucket: number;
   total_bytes: number;
@@ -271,6 +284,12 @@ export async function getNetflowTopTalkers(
   params: NetflowParams & { direction?: 'src' | 'dst' } = {},
 ): Promise<{ records: NetflowTopTalker[] }> {
   return apiFetch(`/netflow/top-talkers${buildQS(params)}`);
+}
+
+export async function getNetflowTopFlows(
+  params: NetflowParams = {},
+): Promise<{ records: NetflowTopFlow[] }> {
+  return apiFetch(`/netflow/top-flows${buildQS(params)}`);
 }
 
 export async function getNetflowTopPorts(
@@ -461,6 +480,12 @@ export interface IpBlockActiveInterface {
   flows: number;
 }
 
+export interface CdnDistribution {
+  cdn_bytes: number;
+  noncdn_bytes: number;
+  providers: Array<{ provider: string; bytes: number; flows: number }>;
+}
+
 export interface IpBlockDetail {
   block: IpBlock;
   summary: {
@@ -478,6 +503,7 @@ export interface IpBlockDetail {
   top_src: Array<{ ip: string; bytes: number; flows: number }>;
   top_dst: Array<{ ip: string; bytes: number; flows: number }>;
   active_interfaces: IpBlockActiveInterface[];
+  cdn_distribution: CdnDistribution;
 }
 
 export async function getIpBlocks(): Promise<{ blocks: IpBlock[] }> {
@@ -595,6 +621,8 @@ export interface InterfaceDetail {
   top_src: Array<{ ip: string; bytes: number; flows: number }>;
   top_dst: Array<{ ip: string; bytes: number; flows: number }>;
   active_blocks: InterfaceActiveBlock[];
+  daily_history: Array<{ day: number; in_bytes: number; out_bytes: number; flows: number }>;
+  cdn_distribution: CdnDistribution;
 }
 
 export interface AsnTopInterface {

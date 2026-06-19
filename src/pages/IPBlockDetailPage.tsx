@@ -114,8 +114,14 @@ export function IPBlockDetailPage() {
     );
   }
 
-  const { block, summary, timeseries, top_asns, top_protocols, top_ports, top_src, top_dst, active_interfaces } = detail;
+  const { block, summary, timeseries, top_asns, top_protocols, top_ports, top_src, top_dst, active_interfaces, cdn_distribution } = detail;
   const bucketSecs = bucketFor(rangeSeconds);
+
+  // ── Distribuição IP x CDN ───────────────────────────────────────────────────
+  const cdnBytes    = cdn_distribution?.cdn_bytes ?? 0;
+  const nonCdnBytes = cdn_distribution?.noncdn_bytes ?? 0;
+  const cdnTotal    = cdnBytes + nonCdnBytes;
+  const cdnPct      = cdnTotal > 0 ? (cdnBytes / cdnTotal * 100) : 0;
 
   // ── Crescimento: 1ª metade vs 2ª metade do período ──────────────────────────
   const half       = Math.floor(timeseries.length / 2);
@@ -399,6 +405,49 @@ export function IPBlockDetailPage() {
           locale={{ emptyText: <Text style={{ color: '#334155' }}>Sem dados</Text> }}
           style={{ background: 'transparent' }} />
       </Card>
+
+      {/* Distribuição IP x CDN (peers do bloco que são CDN) ───────────────── */}
+      {cdnTotal > 0 && (
+        <Card title={<span style={{ color: '#94a3b8' }}>Distribuição IP × CDN</span>}
+          style={{ background: '#0a1628', border: '1px solid #1e2d4a', borderRadius: 8 }}
+          styles={{ body: { padding: 16 } }}>
+          <div style={{ display: 'flex', gap: 24, marginBottom: 14 }}>
+            <div>
+              <Text style={{ color: '#475569', fontSize: 11, display: 'block' }}>TRÁFEGO CDN</Text>
+              <Text style={{ color: '#00c8f0', fontSize: 18, fontFamily: 'monospace', fontWeight: 700 }}>{cdnPct.toFixed(1)}%</Text>
+              <Text style={{ color: '#64748b', fontSize: 11, display: 'block' }}>{formatBytes(cdnBytes)}</Text>
+            </div>
+            <div>
+              <Text style={{ color: '#475569', fontSize: 11, display: 'block' }}>IP COMUM</Text>
+              <Text style={{ color: '#8b5cf6', fontSize: 18, fontFamily: 'monospace', fontWeight: 700 }}>{(100 - cdnPct).toFixed(1)}%</Text>
+              <Text style={{ color: '#64748b', fontSize: 11, display: 'block' }}>{formatBytes(nonCdnBytes)}</Text>
+            </div>
+          </div>
+          <div style={{ background: '#1e2d4a', borderRadius: 4, height: 10, display: 'flex', overflow: 'hidden', marginBottom: 16 }}>
+            <div style={{ background: '#00c8f0', width: `${cdnPct}%`, height: 10, transition: 'width .4s' }} />
+            <div style={{ background: '#8b5cf6', width: `${100 - cdnPct}%`, height: 10, transition: 'width .4s' }} />
+          </div>
+          {cdn_distribution.providers.length > 0 && (
+            <>
+              <Text style={{ color: '#475569', fontSize: 11, display: 'block', marginBottom: 8 }}>TOP PROVEDORES CDN</Text>
+              {cdn_distribution.providers.map(p => {
+                const pPct = cdnBytes > 0 ? (p.bytes / cdnBytes * 100) : 0;
+                return (
+                  <div key={p.provider} style={{ marginBottom: 8 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                      <span style={{ color: '#e2e8f0', fontSize: 12 }}>{p.provider}</span>
+                      <span style={{ color: '#94a3b8', fontSize: 12 }}>{formatBytes(p.bytes)} · {pPct.toFixed(1)}%</span>
+                    </div>
+                    <div style={{ background: '#1e2d4a', borderRadius: 4, height: 5 }}>
+                      <div style={{ background: '#00c8f0', width: `${pPct}%`, height: 5, borderRadius: 4 }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </Card>
+      )}
 
       {/* Interfaces */}
       {active_interfaces && active_interfaces.length > 0 && (

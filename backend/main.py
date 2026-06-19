@@ -43,6 +43,7 @@ from database import (
     netflow_summary,
     netflow_timeseries,
     netflow_top_asn,
+    netflow_top_flows,
     netflow_top_ports,
     netflow_top_talkers,
     query_events,
@@ -242,6 +243,24 @@ def get_netflow_top_talkers(
 ) -> dict:
     return {"records": netflow_top_talkers(
         epoch_begin, epoch_end, direction, limit,
+        **_nf_query_filters(protocol, ip_version, asn, src_ip, dst_ip),
+    )}
+
+
+@app.get("/api/netflow/top-flows")
+def get_netflow_top_flows(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    limit: int = Query(default=20, le=100),
+    protocol: str | None = None,
+    ip_version: str | None = Query(default=None, pattern="^(4|6)$"),
+    asn: int | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    return {"records": netflow_top_flows(
+        epoch_begin, epoch_end, limit,
         **_nf_query_filters(protocol, ip_version, asn, src_ip, dst_ip),
     )}
 

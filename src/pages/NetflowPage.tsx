@@ -9,6 +9,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   getNetflowSummary,
   getNetflowTopTalkers,
+  getNetflowTopFlows,
   getNetflowTopPorts,
   getNetflowTopAsn,
   getNetflowProtocols,
@@ -22,6 +23,7 @@ import {
   resolveIpsToBlocks,
   type NetflowSummary,
   type NetflowTopTalker,
+  type NetflowTopFlow,
   type NetflowTopPort,
   type NetflowTopAsn,
   type NetflowProtocol,
@@ -586,6 +588,7 @@ export function NetflowPage() {
   const [topAsnDst, setTopAsnDst]         = useState<NetflowTopAsn[]>([]);
   const [protocols, setProtocols]         = useState<NetflowProtocol[]>([]);
   const [bandwidth, setBandwidth]         = useState<NetflowBandwidthClient[]>([]);
+  const [topFlows, setTopFlows]           = useState<NetflowTopFlow[]>([]);
   const [incidents, setIncidents]         = useState<NetflowIncident[]>([]);
   const [timeseries, setTimeseries]       = useState<NetflowTimeseriesPoint[]>([]);
   const [protoTs, setProtoTs]             = useState<NetflowProtoTimeseriesResult>({ protocols: [], series: [] });
@@ -627,9 +630,10 @@ export function NetflowPage() {
       getNetflowAsnTimeseries({ epoch_begin, epoch_end, bucket_seconds }),      // 11
       getNetflowPortTimeseries({ epoch_begin, epoch_end, bucket_seconds }),     // 12
       getNetflowTimeseries({ epoch_begin: prevBegin, epoch_end: prevEnd, bucket_seconds }), // 13 prev period
+      getNetflowTopFlows({ ...limited }),                       // 14
     ]);
 
-    const [r0,r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11,r12,r13] = results;
+    const [r0,r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11,r12,r13,r14] = results;
     if (r0.status === 'fulfilled')  setSummary(r0.value);                else setSummary(null);
     const srcRecords = r1.status === 'fulfilled' ? r1.value.records : [];
     const dstRecords = r2.status === 'fulfilled' ? r2.value.records : [];
@@ -650,6 +654,7 @@ export function NetflowPage() {
     if (r11.status === 'fulfilled') setAsnTs(r11.value);                 else setAsnTs({ asns: [], series: [] });
     if (r12.status === 'fulfilled') setPortTs(r12.value);               else setPortTs({ ports: [], series: [] });
     if (r13.status === 'fulfilled') setPrevTimeseries(r13.value.records); else setPrevTimeseries([]);
+    if (r14.status === 'fulfilled') setTopFlows(r14.value.records);      else setTopFlows([]);
 
     if (results.every(r => r.status === 'rejected')) {
       setError('Não foi possível carregar dados de NetFlow. Verifique a conexão com o backend.');
@@ -940,6 +945,15 @@ export function NetflowPage() {
           dataSource={bandwidth} columns={bandwidthColumns} locale={{ emptyText: 'Sem dados' }} />
       </Card>
 
+      {/* ─── Top fluxos por volume (conversas 5-tupla) ───────────────────── */}
+      <Card title={<span style={{ color: '#94a3b8' }}>Top Fluxos por Volume (origem → destino)</span>}
+        style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 8 } }}>
+        <Table<NetflowTopFlow>
+          size="small" rowKey={(r, i) => `${r.src_ip}-${r.dst_ip}-${r.src_port}-${r.dst_port}-${r.protocol}-${i}`}
+          loading={loading} pagination={{ pageSize: 10 }}
+          dataSource={topFlows} columns={topFlowColumns} locale={{ emptyText: 'Sem dados' }} />
+      </Card>
+
       {/* ─── Incidents ───────────────────────────────────────────────────── */}
       <Card title={<span style={{ color: '#94a3b8' }}>Incidentes Recentes (Severidade Elevada)</span>}
         style={{ background: '#0a0f1e', border: '1px solid #1e3a5f' }} styles={{ body: { padding: 8 } }}>
@@ -1050,6 +1064,29 @@ const bandwidthColumns: ColumnsType<NetflowBandwidthClient> = [
     render: v => <span style={{ color: v > 0 ? '#ff3b3b' : '#64748b' }}>{v}</span> },
   { title: 'Avisos', dataIndex: 'warning',
     render: v => <span style={{ color: v > 0 ? '#f59e0b' : '#64748b' }}>{v}</span> },
+];
+
+const topFlowColumns: ColumnsType<NetflowTopFlow> = [
+  { title: 'Origem', key: 'src',
+    render: (_, r) => (
+      <span style={{ fontFamily: 'monospace', color: '#94a3b8' }}>
+        {r.src_ip}{r.src_port != null ? `:${r.src_port}` : ''}
+      </span>
+    ) },
+  { title: 'Destino', key: 'dst',
+    render: (_, r) => (
+      <span style={{ fontFamily: 'monospace', color: '#00c8f0' }}>
+        {r.dst_ip}{r.dst_port != null ? `:${r.dst_port}` : ''}
+      </span>
+    ) },
+  { title: 'Proto', dataIndex: 'protocol', width: 80,
+    render: v => v ?? '—' },
+  { title: 'Volume', dataIndex: 'bytes', width: 110,
+    sorter: (a, b) => a.bytes - b.bytes, defaultSortOrder: 'descend',
+    render: v => <strong style={{ fontFamily: 'monospace' }}>{formatBytes(v)}</strong> },
+  { title: 'Pacotes', dataIndex: 'packets', width: 90,
+    render: v => (v ?? 0).toLocaleString('pt-BR') },
+  { title: 'Fluxos', dataIndex: 'flows', width: 70 },
 ];
 
 const incidentColumns: ColumnsType<NetflowIncident> = [
