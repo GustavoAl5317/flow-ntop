@@ -467,7 +467,7 @@ export function InterfacesPage() {
           />
         </Card>
 
-        {/* Ranking */}
+        {/* Ranking mais usadas */}
         {ranking.length > 0 && (
           <Card
             title={<Text style={{ color: '#94a3b8' }}>Ranking por Saturação</Text>}
@@ -513,6 +513,48 @@ export function InterfacesPage() {
             </div>
           </Card>
         )}
+
+        {/* Menos utilizadas (excluindo interfaces sem tráfego) */}
+        {ranking.length > 1 && (() => {
+          const withTraffic = ranking.filter(r => r.utilization_pct > 0);
+          if (withTraffic.length < 2) return null;
+          const leastUsed = [...withTraffic].sort((a, b) => a.utilization_pct - b.utilization_pct).slice(0, 5);
+          return (
+            <Card
+              title={<Text style={{ color: '#94a3b8' }}>Menos Utilizadas</Text>}
+              style={{ background: '#0a1628', border: '1px solid #1e2d4a', borderRadius: 8 }}
+              styles={{ body: { padding: '12px 20px' } }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {leastUsed.map(r => (
+                  <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}
+                    onClick={() => navigate(`/interfaces/${r.id}`)}>
+                    <div style={{ width: 130, flexShrink: 0 }}>
+                      <Text style={{ color: '#e2e8f0', fontSize: 12 }}>{r.name}</Text>
+                      {r.link_type && (
+                        <Tag color={LINK_TYPE_COLORS[r.link_type] ?? 'default'} style={{ fontSize: 10, marginLeft: 4 }}>
+                          {r.link_type}
+                        </Tag>
+                      )}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <Progress
+                        percent={Math.min(r.utilization_pct, 100)}
+                        showInfo={false}
+                        strokeColor="#334155"
+                        trailColor="#1e2d4a"
+                        size="small"
+                      />
+                    </div>
+                    <Text style={{ color: '#64748b', fontFamily: 'monospace', width: 52, textAlign: 'right', flexShrink: 0, fontSize: 12 }}>
+                      {r.utilization_pct.toFixed(1)}%
+                    </Text>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          );
+        })()}
       </div>
     </main>
   );

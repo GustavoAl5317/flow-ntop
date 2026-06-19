@@ -209,6 +209,8 @@ export interface NetflowBandwidthClient {
 export interface NetflowTimeseriesPoint {
   bucket: number;
   total_bytes: number;
+  in_bytes: number;
+  out_bytes: number;
   total_packets: number;
   flows: number;
   critical: number;
@@ -336,6 +338,21 @@ export async function getNetflowProtocolTimeseries(params: {
   top_n?: number;
 }): Promise<NetflowProtoTimeseriesResult> {
   return apiFetch(`/netflow/protocol-timeseries${buildQS(params)}`);
+}
+
+export interface NetflowPortTimeseriesResult {
+  ports: string[];
+  series: Array<Record<string, number>>;
+}
+
+export async function getNetflowPortTimeseries(params: {
+  epoch_begin?: number;
+  epoch_end?: number;
+  bucket_seconds?: number;
+  top_n?: number;
+  port_type?: 'src' | 'dst';
+}): Promise<NetflowPortTimeseriesResult> {
+  return apiFetch(`/netflow/port-timeseries${buildQS(params)}`);
 }
 
 export interface NetflowAsnTimeseriesResult {

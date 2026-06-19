@@ -400,6 +400,41 @@ export function InterfaceDetailPage() {
           style={{ background: 'transparent' }} />
       </Card>
 
+      {/* Distribuição de blocos IP por tipo (CDN, Transit, etc.) ─────────── */}
+      {active_blocks && active_blocks.length > 0 && (() => {
+        const totalIps = active_blocks.reduce((s, b) => s + b.ip_count, 0);
+        const byType: Record<string, { blocks: number; ips: number }> = {};
+        active_blocks.forEach(b => {
+          const t = b.type || 'Outros';
+          if (!byType[t]) byType[t] = { blocks: 0, ips: 0 };
+          byType[t].blocks += 1;
+          byType[t].ips += b.ip_count;
+        });
+        const sorted = Object.entries(byType).sort((a, b) => b[1].ips - a[1].ips);
+        return (
+          <Card title={<span style={{ color: '#94a3b8' }}>Distribuição por tipo de bloco IP</span>}
+            style={{ background: '#0a1628', border: '1px solid #1e2d4a', borderRadius: 8 }}
+            styles={{ body: { padding: 16 } }}>
+            {sorted.map(([type, stats]) => {
+              const pct = totalIps > 0 ? (stats.ips / totalIps * 100) : 0;
+              return (
+                <div key={type} style={{ marginBottom: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <Tag color={LINK_TYPE_COLORS[type] ?? 'default'} style={{ margin: 0 }}>{type}</Tag>
+                    <span style={{ color: '#94a3b8', fontSize: 12 }}>
+                      {stats.blocks} bloco{stats.blocks !== 1 ? 's' : ''} · {stats.ips} IPs · {pct.toFixed(1)}%
+                    </span>
+                  </div>
+                  <div style={{ background: '#1e2d4a', borderRadius: 4, height: 6 }}>
+                    <div style={{ background: '#00c8f0', width: `${pct}%`, height: 6, borderRadius: 4, transition: 'width .4s' }} />
+                  </div>
+                </div>
+              );
+            })}
+          </Card>
+        );
+      })()}
+
       {/* Blocos IP ativos nesta interface */}
       {active_blocks && active_blocks.length > 0 && (
         <Card title={<span style={{ color: '#94a3b8' }}>Blocos IP ativos nesta interface</span>}

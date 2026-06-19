@@ -779,6 +779,14 @@ def netflow_timeseries(
         rows = conn.execute(
             f"""SELECT (tstamp / ?) * ? AS bucket,
                        SUM(bytes) AS total_bytes,
+                       SUM(CASE WHEN in_if IN (
+                           SELECT ifid FROM interfaces
+                           WHERE link_type IN ('Transit','IX','CDN','Peering','Backbone')
+                       ) THEN bytes ELSE 0 END) AS in_bytes,
+                       SUM(CASE WHEN out_if IN (
+                           SELECT ifid FROM interfaces
+                           WHERE link_type IN ('Transit','IX','CDN','Peering','Backbone')
+                       ) THEN bytes ELSE 0 END) AS out_bytes,
                        SUM(packets) AS total_packets,
                        COUNT(*) AS flows,
                        SUM(CASE WHEN severity IN ('critical','error') THEN 1 ELSE 0 END) AS critical,
@@ -905,6 +913,58 @@ def netflow_protocol_timeseries(
 
     series = [{"bucket": b, **vals} for b, vals in sorted(bucket_map.items())]
     return {"protocols": top_protos, "series": series}
+
+
+def netflow_port_timeseries(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    bucket_seconds: int = 300,
+    top_n: int = 5,
+    port_type: str = "dst",
+) -> dict:
+    """Timeseries de bytes por porta de destino ou origem (top N portas do período)."""
+    port_col = "dst_port" if port_type == "dst" else "src_port"
+    clauses: list[str] = [f"{port_col} IS NOT NULL", f"{port_col} > 0"]
+    params: list = []
+    _nf_filters(clauses, params, epoch_begin, epoch_end)
+    where = " AND ".join(clauses)
+
+    with get_db() as conn:
+        top_rows = conn.execute(
+            f"""SELECT {port_col}, COALESCE(protocol,'?') AS protocol, SUM(bytes) AS b
+                FROM events WHERE {where}
+                GROUP BY {port_col} ORDER BY b DESC LIMIT ?""",
+            [*params, top_n],
+        ).fetchall()
+
+        if not top_rows:
+            return {"ports": [], "series": []}
+
+        top_ports = [r[port_col] for r in top_rows]
+        port_labels = [f"{r[port_col]}/{r['protocol']}" for r in top_rows]
+
+        placeholders = ",".join("?" for _ in top_ports)
+        rows = conn.execute(
+            f"""SELECT (tstamp / ?) * ? AS bucket,
+                       {port_col} AS port,
+                       SUM(bytes) AS bytes
+                FROM events WHERE {where} AND {port_col} IN ({placeholders})
+                GROUP BY bucket, {port_col}
+                ORDER BY bucket ASC""",
+            [bucket_seconds, bucket_seconds, *params, *top_ports],
+        ).fetchall()
+
+    label_by_port: dict[int, str] = dict(zip(top_ports, port_labels))
+    bucket_map: dict[int, dict[str, float]] = {}
+    for r in rows:
+        b = r["bucket"]
+        if b not in bucket_map:
+            bucket_map[b] = {lbl: 0 for lbl in port_labels}
+        lbl = label_by_port.get(r["port"], str(r["port"]))
+        bucket_map[b][lbl] = r["bytes"] or 0
+
+    series = [{"bucket": b, **vals} for b, vals in sorted(bucket_map.items())]
+    return {"ports": port_labels, "series": series}
 
 
 def netflow_asn_timeseries(

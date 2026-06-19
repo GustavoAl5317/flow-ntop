@@ -37,6 +37,7 @@ from database import (
     netflow_bandwidth_by_client,
     netflow_incidents,
     netflow_ip_timeseries,
+    netflow_port_timeseries,
     netflow_protocol_timeseries,
     netflow_protocols,
     netflow_summary,
@@ -377,6 +378,18 @@ def get_netflow_protocol_timeseries(
     user: dict = Depends(get_current_user),
 ) -> dict:
     return netflow_protocol_timeseries(epoch_begin, epoch_end, bucket_seconds, top_n)
+
+
+@app.get("/api/netflow/port-timeseries")
+def get_netflow_port_timeseries(
+    epoch_begin: int | None = None,
+    epoch_end: int | None = None,
+    bucket_seconds: int = Query(default=300, ge=10, le=86400),
+    top_n: int = Query(default=5, ge=1, le=10),
+    port_type: str = Query(default="dst", pattern="^(src|dst)$"),
+    user: dict = Depends(get_current_user),
+) -> dict:
+    return netflow_port_timeseries(epoch_begin, epoch_end, bucket_seconds, top_n, port_type)
 
 
 @app.get("/api/netflow/asn-timeseries")
